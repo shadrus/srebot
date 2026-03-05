@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,21 @@ def get_tools_schema() -> list[dict]:
     return _EXTERNAL_TOOL_SCHEMAS
 
 
+def _redact_secrets(text: str) -> str:
+    """Mask common secrets (Bearer tokens, API keys, passwords) from tool output."""
+    if not isinstance(text, str):
+        return text
+    # Mask Bearer tokens
+    text = re.sub(r'(?i)Bearer\s+[A-Za-z0-9\-\._~\+\/]+=*', 'Bearer [REDACTED_BY_BOT]', text)
+    # Mask API keys, passwords, secrets
+    text = re.sub(
+        r'(?i)(password|secret|api[_-]?key)["\']?\s*[:=]\s*["\']([^"\']+)["\']',
+        r'\1: "[REDACTED_BY_BOT]"',
+        text,
+    )
+    return text
+
+
 async def call_tool(name: str, arguments: str | dict) -> str:
     """
     Execute a tool by name on the corresponding external MCP server.
@@ -119,7 +135,8 @@ async def call_tool(name: str, arguments: str | dict) -> str:
             kwargs = arguments
 
         # Call with original name, but route via client stored for prefixed name
-        return await client.call_tool(original_name, kwargs)
+        result = await client.call_tool(original_name, kwargs)
+        return _redact_secrets(result)
 
     return json.dumps({"error": f"Unknown tool: {name!r}"})
 

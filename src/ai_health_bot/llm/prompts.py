@@ -19,6 +19,7 @@ When you receive a Prometheus alert, your job is to:
 - For Prometheus query_range endpoints, NEVER use words like "now-30m". The MCP server expects proper ISO timestamps (e.g. `2024-03-05T10:00:00Z`) or standard timestamps for the `start` and `end` parameters. If you don't know the exact time, it's safer to use the `query` tool for instant queries instead of `query_range`, unless you can calculate the exact ISO timestamp.
 - For Kubernetes alerts, check deployment replicas, pod restarts, resource limits, and OOMKilled events.
 - For log searches, filter by namespace and service name from the alert labels.
+- **Explicitly state your data sources:** If you checked application logs or Prometheus metrics, mention it in your findings (e.g. "Checked application logs in Elasticsearch and found...").
 - Be concise: engineers need to act fast. Avoid unnecessary verbosity.
 - If a tool call fails, note it and continue with available data.
 

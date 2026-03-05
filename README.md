@@ -31,35 +31,29 @@ uv sync
 
 ```bash
 cp .env.example .env
-# Fill in: TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, LLM_BASE_URL, LLM_API_KEY, LLM_MODEL
+# Fill in: TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, LLM_API_KEY
 ```
 
-### 3. Configure MCP Servers
+### 3. Configure Bot & MCP Servers
 
-Create `mcp_servers.yml` in the root directory. This file defines which external tools the bot should connect to.
+Create `config.yml` (starting from `config.yml.example`). This file defines LLM settings, ignore rules, and external tools.
 
 ```yaml
+llm_model: "gpt-4o"
 mcp_servers:
   prometheus:
     command: "uvx"
     args: ["prometheus-mcp-server", "--prometheus-url", "http://your-prometheus-url:9090"]
-  # You can add more servers here (SQLite, GitHub, custom, etc.)
 ```
 
-### 4. Add bot to channel
-
-1. Create a bot via [@BotFather](https://t.me/BotFather) → get token
-2. Add the bot to your Alertmanager Telegram channel **as admin**
-3. Set `TELEGRAM_CHANNEL_ID` in `.env` to the channel ID (negative number)
-
-### 5. Run
+### 4. Run
 
 ```bash
+# Docker (Recommended)
+docker compose up -d
+
 # Locally
 uv run python -m ai_health_bot.bot.main
-
-# Docker
-docker compose up -d
 ```
 
 ## Environment Variables

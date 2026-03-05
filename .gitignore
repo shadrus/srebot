@@ -62,4 +62,5 @@ docker-compose.override.yml
 logs/
 
 # Secrets / config with real values
-clusters.yml
+config.yml
+ignore_rules.yml

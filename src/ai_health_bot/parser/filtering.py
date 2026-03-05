@@ -1,9 +1,7 @@
 """Alert filtering logic — supports nested AND/OR rules based on labels."""
 
 import logging
-from pathlib import Path
 
-import yaml
 from pydantic import BaseModel, Field
 
 from ai_health_bot.parser.alert_parser import Alert
@@ -55,26 +53,12 @@ class IgnoreRule(BaseModel):
     name: str = "Unnamed Rule"
     condition: FilterCondition
 
-class IgnoreRegistry(BaseModel):
-    ignore_rules: list[IgnoreRule] = Field(default_factory=list)
-
-    @classmethod
-    def from_yaml(cls, path: str | Path) -> "IgnoreRegistry":
-        path = Path(path)
-        if not path.exists():
-            return cls()
-        
-        with open(path) as f:
-            data = yaml.safe_load(f) or {}
-        
-        try:
-            return cls.model_validate(data)
-        except Exception as e:
-            logger.error("Failed to parse ignore_rules.yml: %s", e)
-            return cls()
+class IgnoreRegistry:
+    def __init__(self, rules: list[IgnoreRule]) -> None:
+        self._rules = rules
 
     def should_ignore(self, alert: Alert) -> bool:
-        for rule in self.ignore_rules:
+        for rule in self._rules:
             if rule.condition.matches(alert):
                 logger.info(
                     "Alert %s [%s] ignored by rule: %s",
@@ -93,5 +77,5 @@ def get_ignore_registry() -> IgnoreRegistry:
     if _ignore_registry is None:
         from ai_health_bot.config import get_settings
         s = get_settings()
-        _ignore_registry = IgnoreRegistry.from_yaml(s.alert_ignore_rules_path)
+        _ignore_registry = IgnoreRegistry(s.ignore_rules)
     return _ignore_registry

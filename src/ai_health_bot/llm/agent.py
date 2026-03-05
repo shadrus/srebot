@@ -42,6 +42,7 @@ class AlertAnalysisAgent:
             {"role": "system", "content": SYSTEM_PROMPT.format(language=self._language)},
             {"role": "user", "content": build_user_message(alerts)},
         ]
+        used_tools: set[str] = set()
 
         for iteration in range(self._max_iterations):
             logger.debug(
@@ -67,12 +68,17 @@ class AlertAnalysisAgent:
 
             if finish_reason == "stop" or not message.tool_calls:
                 # Final answer
-                return message.content or "⚠️ Analysis returned empty response."
+                content = message.content or "⚠️ Analysis returned empty response."
+                if used_tools:
+                    tools_str = ", ".join(f"<code>{t}</code>" for t in sorted(used_tools))
+                    content += f"\n\n<b>🛠 Tools used:</b> {tools_str}"
+                return content
 
             # Execute all requested tool calls
             for tool_call in message.tool_calls:
                 fn_name = tool_call.function.name
                 fn_args = tool_call.function.arguments
+                used_tools.add(fn_name)
                 logger.info("Tool call: %s(%s)", fn_name, fn_args[:200])
 
                 result = await call_tool(fn_name, fn_args)
