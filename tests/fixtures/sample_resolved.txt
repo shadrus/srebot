@@ -1,0 +1,10 @@
+Alerts Resolved:
+Labels:
+ - alertname = KubeDeploymentReplicasMismatch
+ - cluster = google-production
+ - deployment = ai-product-moderation
+ - namespace = production
+ - severity = warning
+Annotations:
+ - summary = Deployment has not matched the expected number of replicas.
+Source: https://prometheus.world.example.tech/graph?g0.expr=kube_deployment_spec_replicas&g0.tab=1
