@@ -1,0 +1,103 @@
+# Default values for ai-health-bot.
+# This is a YAML-file that represents the configuration of your application.
+
+replicaCount: 1
+
+image:
+  repository: ai-health-bot
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext: {}
+  # fsGroup: 2000
+
+securityContext: {}
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
+
+# ------------------------------------------------------------------------------
+# Bot Configuration (config.yml)
+# ------------------------------------------------------------------------------
+config:
+  llm_base_url: "https://api.openai.com/v1"
+  llm_model: "gpt-4o"
+  llm_response_language: "English"
+  llm_max_iterations: 10
+  
+  log_level: "INFO"
+  dry_run: false
+  
+  # How long (seconds) to remember a firing alert fingerprint
+  alert_fingerprint_ttl: 86400
+
+  # MCP Servers registry
+  mcp_servers:
+    prometheus:
+      command: "uvx"
+      args:
+        - "prometheus-mcp-server"
+      env:
+        PROMETHEUS_URL: "http://prometheus-operated.monitoring.svc:9090"
+
+  # Alert ignore rules
+  ignore_rules:
+    - name: "Ignore Watchdog"
+      condition:
+        labels: { alertname: "Watchdog" }
+
+# ------------------------------------------------------------------------------
+# Secrets (Existing secret or provided values)
+# ------------------------------------------------------------------------------
+secrets:
+  # If existingSecret is provided, telegram_bot_token and llm_api_key will be read from it.
+  existingSecret: ""
+  # Otherwise, provide them here:
+  telegram_bot_token: ""
+  telegram_channel_id: ""
+  llm_api_key: ""
+
+# ------------------------------------------------------------------------------
+# Redis Storage
+# ------------------------------------------------------------------------------
+redis:
+  # Use an external Redis or deploy a simple one inside the pod/namespace
+  enabled: true
+  # If external, provide full URL (e.g. redis://host:6379/0)
+  url: ""
+  # If internal redis is enabled, we'll use a sidecar or a separate deployment.
+  # For simplicity, let's assume bitnami/redis as a dependency or a simple standalone.
+  # In this basic chart, we can just use a separate deployment or sidecar.
+
+resources: {}
+  # limits:
+  #   cpu: 500m
+  #   memory: 512Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 256Mi
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
