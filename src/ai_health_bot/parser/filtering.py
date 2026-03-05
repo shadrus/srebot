@@ -41,9 +41,6 @@ class FilterCondition(BaseModel):
                 return False
         
         # If we have no labels, no 'any', and no 'all', it's an empty condition.
-        # Decisions: empty condition = no match? Or should we avoid empty conditions?
-        # For now, if at least one check was performed, we returned.
-        # If no checks were performed but the object exists, we'll return True if it's not empty.
         if not self.labels and not self.any and not self.all:
              return False
 
