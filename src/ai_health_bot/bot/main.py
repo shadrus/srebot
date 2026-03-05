@@ -6,8 +6,8 @@ import sys
 from telegram.ext import ApplicationBuilder, MessageHandler, filters
 
 from ai_health_bot.bot.handlers import channel_post_handler
-from ai_health_bot.config import get_cluster_registry, get_settings
-from ai_health_bot.mcp.tools import close_http
+from ai_health_bot.config import get_mcp_registry, get_settings
+from ai_health_bot.mcp.registry import register_external_mcp, shutdown_mcp
 from ai_health_bot.state.store import get_store
 
 
@@ -20,8 +20,8 @@ def _setup_logging(level: str) -> None:
     )
     # Quieten noisy third-party libs
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("telegram").setLevel(logging.WARNING)
-    logging.getLogger("openai").setLevel(logging.WARNING)
 
 
 async def post_init(application) -> None:
@@ -31,17 +31,30 @@ async def post_init(application) -> None:
     logger = logging.getLogger(__name__)
     logger.info("Redis connection established")
 
-    # Log cluster config summary
-    registry = get_cluster_registry()
-    if registry.all_names():
-        logger.info("Configured clusters: %s", registry.all_names())
-    else:
-        logger.warning("No clusters configured — tool calls will fail! Check clusters.yml")
+    # Connect to all external MCP servers
+    registry = get_mcp_registry()
+    configs = registry.all_configs()
+    if not configs:
+        logger.warning("No MCP servers configured! Check mcp_servers.yml")
+        return
+
+    for cfg in configs:
+        logger.info("Registering MCP server: %s", cfg.name)
+        try:
+            await register_external_mcp(
+                name=cfg.name,
+                command=cfg.command,
+                args=cfg.args,
+                env=cfg.env,
+                read_only=cfg.read_only,
+            )
+        except Exception as e:
+            logger.error("Failed to register MCP server %s: %s", cfg.name, e)
 
 
 async def post_shutdown(application) -> None:
     """Cleanup on shutdown."""
-    await close_http()
+    await shutdown_mcp()
     store = await get_store()
     await store.close()
 
@@ -51,7 +64,11 @@ def main() -> None:
     _setup_logging(settings.log_level)
 
     logger = logging.getLogger(__name__)
-    logger.info("Starting AI Health Bot (model=%s)", settings.llm_model)
+    logger.info(
+        "Starting AI Health Bot (model=%s, mode=%s)",
+        settings.llm_model,
+        "DRY-RUN 🔇" if settings.dry_run else "LIVE 📢",
+    )
 
     app = (
         ApplicationBuilder()
@@ -61,10 +78,11 @@ def main() -> None:
         .build()
     )
 
-    # Listen to channel posts AND group messages (Alertmanager can post to either)
+    # Listen only to the configured channel (safety guard against accidental multi-channel usage)
     app.add_handler(
         MessageHandler(
-            filters.ChatType.CHANNEL | filters.ChatType.GROUPS,
+            (filters.ChatType.CHANNEL | filters.ChatType.GROUPS)
+            & filters.Chat(chat_id=settings.telegram_channel_id),
             channel_post_handler,
         )
     )

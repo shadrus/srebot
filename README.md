@@ -1,26 +1,22 @@
 # AI Health Bot 🤖
 
-Telegram bot that monitors a Prometheus Alertmanager channel, analyzes each new alert
-using an LLM (any OpenAI-compatible API) with MCP tools (Prometheus, Elasticsearch),
-and replies with a root-cause analysis in the same thread.
-
-Duplicate alerts (same fingerprint, still firing) are silently ignored until resolved.
-Multiple Kubernetes clusters are supported out of the box.
+Telegram bot that monitors a Prometheus Alertmanager channel, analyzes each new alert using an LLM (any OpenAI-compatible API) with external **MCP (Model Context Protocol)** tools, and replies with a root-cause analysis in the same thread.
 
 ## How It Works
 
 ```
 Alertmanager ──Telegram notification──► Channel
-                                            │  bot polling
-                                     Alert Parser
-                                            │
-                                  ┌─────── ▼ ────────┐
-                                  │  LLM Agent loop   │
-                                  └──┬───────────┬───┘
-                                     │           │ (by cluster label)
-                               Prometheus[c]   ES[c]
-                                     │           │
-                                  Bot replies in thread
+                                             │  bot polling
+                                      Alert Parser
+                                             │
+                                   ┌─────── ▼ ────────┐
+                                   │  LLM Agent loop   │
+                                   └──┬───────────┬───┘
+                                      │           │
+                          (via Stdio) MCP Server 1   MCP Server 2
+                               (e.g. Prometheus)   (e.g. SQLite/ES)
+                                      │           │
+                                   Bot replies in thread
 ```
 
 ## Quick Start
@@ -38,24 +34,23 @@ cp .env.example .env
 # Fill in: TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, LLM_BASE_URL, LLM_API_KEY, LLM_MODEL
 ```
 
-### 3. Configure clusters
+### 3. Configure MCP Servers
 
-Edit `clusters.yml` — add one entry per Kubernetes cluster.
-The key **must match** the `cluster` label in your Prometheus alerts.
+Create `mcp_servers.yml` in the root directory. This file defines which external tools the bot should connect to.
 
 ```yaml
-clusters:
-  google-production:
-    prometheus_url: http://prometheus:9090
-    elasticsearch_url: http://es:9200
-    elasticsearch_index_pattern: "logs-*"
+mcp_servers:
+  prometheus:
+    command: "uvx"
+    args: ["prometheus-mcp-server", "--prometheus-url", "http://your-prometheus-url:9090"]
+  # You can add more servers here (SQLite, GitHub, custom, etc.)
 ```
 
 ### 4. Add bot to channel
 
 1. Create a bot via [@BotFather](https://t.me/BotFather) → get token
 2. Add the bot to your Alertmanager Telegram channel **as admin**
-3. Set `TELEGRAM_CHANNEL_ID` to the channel ID (negative number for channels/groups)
+3. Set `TELEGRAM_CHANNEL_ID` in `.env` to the channel ID (negative number)
 
 ### 5. Run
 
@@ -78,33 +73,43 @@ docker compose up -d
 | `LLM_MODEL` | Model name (e.g. `gpt-4o`) |
 | `REDIS_URL` | Redis connection URL |
 | `ALERT_FINGERPRINT_TTL` | Seconds to remember firing alert (default: 86400) |
-| `CLUSTERS_CONFIG_PATH` | Path to `clusters.yml` (default: `clusters.yml`) |
+| `MCP_SERVERS_CONFIG_PATH` | Path to `mcp_servers.yml` (default: `mcp_servers.yml`) |
 | `LOG_LEVEL` | `DEBUG` / `INFO` / `WARNING` |
 
-## Multi-Cluster Support
+## MCP Multi-Server Support
 
-The bot reads the `cluster` label from each alert and routes all tool calls
-(Prometheus queries, Elasticsearch searches) to the correct cluster endpoints
-defined in `clusters.yml`.
+The bot is a pure MCP orchestrator. It doesn't have built-in tools. Instead, it connects to external MCP servers via Stdio (Standard Input/Output) on startup.
 
-No limit on the number of clusters — add as many as needed.
+- **Dynamic Discovery**: The bot automatically downloads tools from each MCP server and provides them to the LLM.
+- **Unified Registry**: All tools are merged into a single schema for the LLM.
+- **Flexibility**: You can swap or add any MCP server without changing the bot's core code.
+
+## Alert Filtering
+
+You can ignore specific alerts based on their labels using flexible AND/OR logic in `ignore_rules.yml`.
+
+- **Labels (AND)**: Matches if all specified labels match exactly.
+- **Any (OR)**: Matches if at least one sub-condition matches.
+- **All (AND)**: Matches if all sub-conditions match.
+
+Example `ignore_rules.yml`:
+```yaml
+ignore_rules:
+  - name: "Ignore Watchdog"
+    condition:
+      labels: { alertname: "Watchdog" }
+  - name: "Ignore Prod-DB severity info"
+    condition:
+      all:
+        - labels: { cluster: "prod", job: "database" }
+        - labels: { severity: "info" }
+```
 
 ## Deduplication
 
 - First `Alerts Firing` for a fingerprint → analysis sent as thread reply
 - Subsequent `Alerts Firing` with same fingerprint → silently ignored
 - `Alerts Resolved` → fingerprint removed from Redis, "✅ Resolved" reply sent
-- Next firing after resolution → fresh analysis triggered
-
-## Available LLM Tools
-
-| Tool | Description |
-|---|---|
-| `query_prometheus` | Instant PromQL query |
-| `query_prometheus_range` | Range PromQL query (metric history) |
-| `get_active_alerts` | List currently firing alerts |
-| `search_logs` | Full-text log search in Elasticsearch |
-| `get_index_stats` | Elasticsearch index statistics |
 
 ## Development
 
@@ -120,18 +125,18 @@ uv run ruff check src/ tests/
 
 ```
 src/ai_health_bot/
-├── config.py          # Settings + ClusterRegistry
+├── config.py          # Settings + MCPServerRegistry
 ├── parser/
 │   └── alert_parser.py  # Telegram message parser
 ├── state/
 │   └── store.py         # Redis dedup store
 ├── mcp/
-│   ├── tools.py         # Prometheus + ES tool functions
-│   └── registry.py      # OpenAI function-calling schema builder
+│   ├── mcp_client.py    # Official MCP Protocol client (Stdio)
+│   └── registry.py      # Dynamic tool registration and routing
 ├── llm/
 │   ├── prompts.py       # System prompt + message builder
 │   └── agent.py         # LLM tool-call loop
 └── bot/
     ├── handlers.py      # channel_post_handler
-    └── main.py          # Entry point
+    └── main.py          # Entry point (Lifecycle management)
 ```

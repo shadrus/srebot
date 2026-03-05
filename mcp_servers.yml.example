@@ -1,0 +1,63 @@
+mcp_servers:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Prometheus MCP Server
+  # https://github.com/pab1it0/prometheus-mcp-server
+  # ─────────────────────────────────────────────────────────────────────────────
+  yandex-production:
+    command: "uvx"
+    args:
+      - "prometheus-mcp-server"
+    env:
+      PROMETHEUS_URL: "http://prometheus-prod.example.com:9090"
+      # PROMETHEUS_USERNAME: "admin"
+      # PROMETHEUS_PASSWORD: "secret"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Elasticsearch MCP Server (official, by Elastic)
+  # https://github.com/elastic/mcp-server-elasticsearch
+  # Install: npm install -g @elastic/mcp-server-elasticsearch
+  # ─────────────────────────────────────────────────────────────────────────────
+  #
+  # NOTE: The server name is used as a TOOL PREFIX.
+  # Tools will be available as "yandex-es__search", "yandex-es__list_indices", etc.
+  # The LLM will route to these tools when it sees the matching "cluster" label.
+  yandex-es:
+    command: "docker"
+    args:
+      - "run"
+      - "-i"
+      - "--rm"
+      - "-e"
+      - "ES_URL"
+      - "-e"
+      - "ES_API_KEY"
+      - "docker.elastic.co/mcp/elasticsearch"
+      - "stdio"
+    # read_only: true filters out write-capable tools (create, delete, bulk, etc.)
+    # Recommended when ES has no auth.
+    read_only: true
+    env:
+      ES_URL: "https://elasticsearch-prod.example.com:9200"
+      # ES_API_KEY: "your-api-key-here"
+      # ES_USERNAME: "elastic"
+      # ES_PASSWORD: "changeme"
+      # ES_SSL_SKIP_VERIFY: "true"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Second cluster example (staging)
+  # ─────────────────────────────────────────────────────────────────────────────
+  # staging:
+  #   command: "uvx"
+  #   args:
+  #     - "prometheus-mcp-server"
+  #     - "--prometheus-url"
+  #     - "http://prometheus-staging.example.com:9090"
+  #
+  # staging-es:
+  #   command: "npx"
+  #   args:
+  #     - "-y"
+  #     - "@elastic/mcp-server-elasticsearch"
+  #   env:
+  #     ES_URL: "https://elasticsearch-staging.example.com:9200"
+  #     ES_API_KEY: "staging-api-key"

@@ -1,124 +1,136 @@
-"""MCP tool registry — builds OpenAI function-calling schema from tool functions."""
+"""MCP tool registry — manages external MCP clients and their tools."""
 
-import inspect
 import json
-import re
-from collections.abc import Callable, Coroutine
+import logging
 from typing import Any
 
-from ai_health_bot.mcp import tools as mcp_tools
+logger = logging.getLogger(__name__)
 
-# Map Python type annotations to JSON Schema types
-_TYPE_MAP = {
-    "str": "string",
-    "int": "integer",
-    "float": "number",
-    "bool": "boolean",
-    "dict": "object",
-    "list": "array",
-    "None": "null",
-}
-
-
-def _py_type_to_json(annotation: str) -> str:
-    return _TYPE_MAP.get(annotation, "string")
-
-
-def _parse_args_from_docstring(doc: str) -> dict[str, str]:
-    """Extract 'Args:' section from docstring into {param: description} dict."""
-    descriptions: dict[str, str] = {}
-    in_args = False
-    for line in doc.splitlines():
-        stripped = line.strip()
-        if stripped == "Args:":
-            in_args = True
-            continue
-        if in_args:
-            if stripped in {"Returns:", "Raises:", "Note:", "Notes:", "Example:", "Examples:"}:
-                break
-            m = re.match(r"^(\w+):\s*(.+)$", stripped)
-            if m:
-                descriptions[m.group(1)] = m.group(2)
-    return descriptions
+# Tool name prefixes/substrings that indicate write operations.
+# If a server is configured as read_only=True, these tools are hidden from the LLM.
+_WRITE_TOOL_PATTERNS = (
+    "create_",
+    "delete_",
+    "update_",
+    "put_",
+    "insert_",
+    "bulk",
+    "reindex",
+    "clear_",
+    "flush_",
+    "force_merge",
+    "open_",
+    "close_",
+    "rollover",
+    "shrink",
+    "split",
+    "clone",
+)
 
 
-def _build_tool_schema(func: Callable) -> dict:
-    """Build an OpenAI tool schema dict from a Python async function."""
-    doc = inspect.getdoc(func) or ""
-    # First paragraph = function description
-    description = doc.split("\n\n")[0].replace("\n", " ").strip()
-
-    param_descriptions = _parse_args_from_docstring(doc)
-    sig = inspect.signature(func)
-
-    properties: dict[str, dict] = {}
-    required: list[str] = []
-
-    for name, param in sig.parameters.items():
-        ann = param.annotation
-        ann_name = ann.__name__ if hasattr(ann, "__name__") else str(ann)
-        # Handle Optional[X] → X
-        ann_name = ann_name.replace("Optional[", "").replace("]", "").split("|")[0].strip()
-
-        prop: dict[str, Any] = {"type": _py_type_to_json(ann_name)}
-        if name in param_descriptions:
-            prop["description"] = param_descriptions[name]
-
-        properties[name] = prop
-
-        # Required if no default
-        if param.default is inspect.Parameter.empty:
-            required.append(name)
-
-    return {
-        "type": "function",
-        "function": {
-            "name": func.__name__,
-            "description": description,
-            "parameters": {
-                "type": "object",
-                "properties": properties,
-                "required": required,
-            },
-        },
-    }
+def _is_write_tool(tool_name: str) -> bool:
+    """Return True if the tool appears to perform write/mutating operations."""
+    lower = tool_name.lower()
+    return any(lower.startswith(p) or p in lower for p in _WRITE_TOOL_PATTERNS)
 
 
-# Functions exposed to the LLM
-_TOOL_FUNCTIONS: list[Callable] = [
-    mcp_tools.query_prometheus,
-    mcp_tools.query_prometheus_range,
-    mcp_tools.get_active_alerts,
-    mcp_tools.search_logs,
-    mcp_tools.get_index_stats,
-]
+# External MCP clients
+_EXTERNAL_CLIENTS: list[Any] = []
+_EXTERNAL_TOOL_SCHEMAS: list[dict] = []
+_EXTERNAL_TOOL_TO_CLIENT: dict[str, Any] = {}
 
-# Name → callable mapping for execution
-TOOL_MAP: dict[str, Callable[..., Coroutine]] = {fn.__name__: fn for fn in _TOOL_FUNCTIONS}
 
-# Pre-built schema list for OpenAI API
-TOOLS_SCHEMA: list[dict] = [_build_tool_schema(fn) for fn in _TOOL_FUNCTIONS]
+async def register_external_mcp(
+    name: str,
+    command: str,
+    args: list[str] | None = None,
+    env: dict[str, str] | None = None,
+    read_only: bool = False,
+):
+    """Connect to an external MCP server and register its tools with a prefix."""
+    from ai_health_bot.mcp.mcp_client import ExternalMCPClient
+
+    client = ExternalMCPClient(command, args, env)
+    try:
+        await client.connect()
+        _EXTERNAL_CLIENTS.append(client)
+
+        tools = await client.get_tools_as_openai_schema()
+        registered = 0
+        skipped = 0
+        for tool in tools:
+            original_name = tool["function"]["name"]
+
+            # In read_only mode, hide write-capable tools from the LLM entirely
+            if read_only and _is_write_tool(original_name):
+                logger.debug(
+                    "read_only: skipping write tool %r from server %r", original_name, name
+                )
+                skipped += 1
+                continue
+
+            # Prefix tool name to avoid collisions and allow cluster routing
+            # e.g. query_prometheus -> yandex-production__query_prometheus
+            prefixed_name = f"{name}__{original_name}"
+            tool["function"]["name"] = prefixed_name
+
+            _EXTERNAL_TOOL_SCHEMAS.append(tool)
+            _EXTERNAL_TOOL_TO_CLIENT[prefixed_name] = (client, original_name)
+            registered += 1
+
+        mode = "read_only" if read_only else "full"
+        registered_names = [
+            t["function"]["name"]
+            for t in _EXTERNAL_TOOL_SCHEMAS
+            if t["function"]["name"].startswith(f"{name}__")
+        ]
+        logger.info(
+            "Registered %d tools from MCP server %r (%s mode, skipped %d write tools)",
+            registered,
+            name,
+            mode,
+            skipped,
+        )
+        logger.debug("  Registered tools: %s", registered_names)
+    except Exception as e:
+        logger.error("Failed to connect to MCP server %s: %s", name, e)
+        raise
+
+
+def get_tools_schema() -> list[dict]:
+    """Get the schema of all registered external tools."""
+    return _EXTERNAL_TOOL_SCHEMAS
 
 
 async def call_tool(name: str, arguments: str | dict) -> str:
     """
-    Execute a tool by name with the given arguments.
+    Execute a tool by name on the corresponding external MCP server.
     Returns the result serialized as a JSON string.
     """
-    fn = TOOL_MAP.get(name)
-    if fn is None:
-        return json.dumps({"error": f"Unknown tool: {name!r}"})
+    if name in _EXTERNAL_TOOL_TO_CLIENT:
+        client, original_name = _EXTERNAL_TOOL_TO_CLIENT[name]
+        
+        if isinstance(arguments, str):
+            try:
+                kwargs = json.loads(arguments)
+            except json.JSONDecodeError as exc:
+                return json.dumps({"error": f"Invalid JSON arguments: {exc}"})
+        else:
+            kwargs = arguments
 
-    if isinstance(arguments, str):
+        # Call with original name, but route via client stored for prefixed name
+        return await client.call_tool(original_name, kwargs)
+
+    return json.dumps({"error": f"Unknown tool: {name!r}"})
+
+
+async def shutdown_mcp():
+    """Close all external MCP connections."""
+    for client in _EXTERNAL_CLIENTS:
         try:
-            kwargs = json.loads(arguments)
-        except json.JSONDecodeError as exc:
-            return json.dumps({"error": f"Invalid JSON arguments: {exc}"})
-    else:
-        kwargs = arguments
-
-    try:
-        result = await fn(**kwargs)
-        return json.dumps(result, default=str)
-    except Exception as exc:
-        return json.dumps({"error": str(exc)})
+            await client.close()
+        except Exception as e:
+            logger.warning("Error during MCP client shutdown: %s", e)
+    _EXTERNAL_CLIENTS.clear()
+    _EXTERNAL_TOOL_SCHEMAS.clear()
+    _EXTERNAL_TOOL_TO_CLIENT.clear()

@@ -7,7 +7,7 @@ from openai.types.chat import ChatCompletionMessage
 
 from ai_health_bot.config import get_settings
 from ai_health_bot.llm.prompts import SYSTEM_PROMPT, build_user_message
-from ai_health_bot.mcp.registry import TOOLS_SCHEMA, call_tool
+from ai_health_bot.mcp.registry import call_tool, get_tools_schema
 from ai_health_bot.parser.alert_parser import Alert
 
 logger = logging.getLogger(__name__)
@@ -28,30 +28,34 @@ class AlertAnalysisAgent:
             api_key=settings.llm_api_key,
         )
         self._model = settings.llm_model
+        self._language = settings.llm_response_language
         self._max_iterations = settings.llm_max_iterations
 
-    async def analyze(self, alert: Alert) -> str:
+    async def analyze(self, alerts: list[Alert]) -> str:
         """
-        Analyze the alert and return a Telegram HTML-formatted analysis string.
+        Analyze a group of related alerts and return a Telegram HTML-formatted string.
+        All alerts share the same alertname + cluster + job.
         Runs the LLM tool-calling loop until the model produces a final text response.
         """
+        primary = alerts[0]
         messages: list[dict] = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": build_user_message(alert)},
+            {"role": "system", "content": SYSTEM_PROMPT.format(language=self._language)},
+            {"role": "user", "content": build_user_message(alerts)},
         ]
 
         for iteration in range(self._max_iterations):
             logger.debug(
-                "LLM iteration %d/%d for alert %s",
+                "LLM iteration %d/%d for group %s (%d alert(s))",
                 iteration + 1,
                 self._max_iterations,
-                alert.fingerprint,
+                primary.alertname,
+                len(alerts),
             )
 
             response = await self._client.chat.completions.create(
                 model=self._model,
                 messages=messages,
-                tools=TOOLS_SCHEMA,
+                tools=get_tools_schema(),
                 tool_choice="auto",
             )
 
@@ -83,7 +87,7 @@ class AlertAnalysisAgent:
                 )
 
         logger.warning(
-            "Max iterations (%d) reached for alert %s", self._max_iterations, alert.fingerprint
+            "Max iterations (%d) reached for group %s", self._max_iterations, primary.alertname
         )
         return "⚠️ Analysis incomplete: max tool iterations reached. Check logs for details."
 

@@ -4,63 +4,52 @@ import logging
 from pathlib import Path
 
 import yaml
-from pydantic import field_validator
+from pydantic import BaseModel, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
 
-class ClusterConfig:
-    """Configuration for a single monitored cluster."""
+class MCPServerConfig(BaseModel):
+    """Configuration for an external MCP server."""
 
-    def __init__(
-        self,
-        name: str,
-        prometheus_url: str,
-        elasticsearch_url: str | None = None,
-        elasticsearch_index_pattern: str = "logs-*",
-    ) -> None:
-        self.name = name
-        self.prometheus_url = prometheus_url.rstrip("/")
-        self.elasticsearch_url = elasticsearch_url.rstrip("/") if elasticsearch_url else None
-        self.elasticsearch_index_pattern = elasticsearch_index_pattern
-
-    def __repr__(self) -> str:
-        return f"ClusterConfig(name={self.name!r}, prometheus={self.prometheus_url!r})"
+    name: str
+    command: str
+    args: list[str] = []
+    env: dict[str, str] | None = None
+    read_only: bool = False  # if True, only allow read-like tools (block create/delete/update)
 
 
-class ClusterRegistry:
-    """Registry of all configured clusters, keyed by cluster label value."""
+class MCPServerRegistry:
+    """Registry of all configured external MCP servers."""
 
-    def __init__(self, clusters: dict[str, ClusterConfig]) -> None:
-        self._clusters = clusters
+    def __init__(self, servers: dict[str, MCPServerConfig]) -> None:
+        self._servers = servers
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "ClusterRegistry":
+    def from_yaml(cls, path: str | Path) -> "MCPServerRegistry":
         path = Path(path)
         if not path.exists():
-            logger.warning("clusters.yml not found at %s — no clusters configured", path)
+            logger.warning("mcp_servers.yml not found at %s — no external servers configured", path)
             return cls({})
 
         with open(path) as f:
             data = yaml.safe_load(f) or {}
 
-        clusters: dict[str, ClusterConfig] = {}
-        for name, cfg in (data.get("clusters") or {}).items():
-            clusters[name] = ClusterConfig(
+        servers: dict[str, MCPServerConfig] = {}
+        for name, cfg in (data.get("mcp_servers") or {}).items():
+            servers[name] = MCPServerConfig(
                 name=name,
-                prometheus_url=cfg.get("prometheus_url", ""),
-                elasticsearch_url=cfg.get("elasticsearch_url"),
-                elasticsearch_index_pattern=cfg.get("elasticsearch_index_pattern", "logs-*"),
+                command=cfg.get("command", ""),
+                args=cfg.get("args", []),
+                env=cfg.get("env"),
+                read_only=cfg.get("read_only", False),
             )
-        logger.info("Loaded %d cluster(s): %s", len(clusters), list(clusters))
-        return cls(clusters)
+        logger.info("Loaded %d MCP server(s) config: %s", len(servers), list(servers))
+        return cls(servers)
 
-    def get(self, cluster_name: str) -> ClusterConfig | None:
-        return self._clusters.get(cluster_name)
-
-    def all_names(self) -> list[str]:
-        return list(self._clusters.keys())
+    def all_configs(self) -> list[MCPServerConfig]:
+        return list(self._servers.values())
 
 
 class Settings(BaseSettings):
@@ -74,17 +63,24 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.openai.com/v1"
     llm_api_key: str
     llm_model: str = "gpt-4o"
+    llm_response_language: str = "English"
     llm_max_iterations: int = 10  # tool-call loop guard
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
     alert_fingerprint_ttl: int = 86400  # seconds
 
-    # Clusters config
-    clusters_config_path: str = "clusters.yml"
+    # MCP servers config
+    mcp_servers_config_path: str = "mcp_servers.yml"
+
+    # Alert ignore rules
+    alert_ignore_rules_path: str = "ignore_rules.yml"
 
     # Logging
     log_level: str = "INFO"
+
+    # Dry-run / debug mode — log all outgoing messages instead of sending to Telegram
+    dry_run: bool = False
 
     @field_validator("log_level")
     @classmethod
@@ -97,7 +93,7 @@ class Settings(BaseSettings):
 
 # Module-level singletons (initialized once in main.py)
 _settings: Settings | None = None
-_cluster_registry: ClusterRegistry | None = None
+_mcp_registry: MCPServerRegistry | None = None
 
 
 def get_settings() -> Settings:
@@ -107,9 +103,9 @@ def get_settings() -> Settings:
     return _settings
 
 
-def get_cluster_registry() -> ClusterRegistry:
-    global _cluster_registry
-    if _cluster_registry is None:
+def get_mcp_registry() -> MCPServerRegistry:
+    global _mcp_registry
+    if _mcp_registry is None:
         s = get_settings()
-        _cluster_registry = ClusterRegistry.from_yaml(s.clusters_config_path)
-    return _cluster_registry
+        _mcp_registry = MCPServerRegistry.from_yaml(s.mcp_servers_config_path)
+    return _mcp_registry
