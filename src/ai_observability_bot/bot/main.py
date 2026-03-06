@@ -22,7 +22,7 @@ async def _readiness_handler(request: web.Request) -> web.Response:
     try:
         store = await get_store()
         # Ping redis to ensure connection is alive
-        await store.redis.ping()
+        await store.ping()
         return web.Response(text="Ready", status=200)
     except Exception as e:
         logger = logging.getLogger(__name__)
@@ -58,9 +58,13 @@ def _setup_logging(level: str) -> None:
 
 async def post_init(application) -> None:
     """Called after bot is initialized — warm up connections."""
+    # Start healthcheck server as early as possible to satisfy K8s probes
+    application.bot_data["health_runner"] = await _start_health_server()
+    logger = logging.getLogger(__name__)
+    logger.info("Healthcheck HTTP server started on port 8080 (/livez, /readyz)")
+
     # Ensure Redis is reachable
     await get_store()
-    logger = logging.getLogger(__name__)
     logger.info("Redis connection established")
 
     # Connect to all external MCP servers
@@ -82,10 +86,6 @@ async def post_init(application) -> None:
             )
         except Exception as e:
             logger.error("Failed to register MCP server %s: %s", cfg.name, e)
-
-    # Start healthcheck server
-    application.bot_data["health_runner"] = await _start_health_server()
-    logger.info("Healthcheck HTTP server started on port 8080 (/livez, /readyz)")
 
 
 async def post_shutdown(application) -> None:

@@ -61,6 +61,10 @@ class AlertStore:
             return None
         return json.loads(value).get("reply_message_id")
 
+    async def ping(self) -> None:
+        """Ping the underlying Redis to ensure connectivity."""
+        await self._redis.ping()
+
     async def close(self) -> None:
         await self._redis.aclose()
 

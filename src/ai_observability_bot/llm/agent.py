@@ -37,9 +37,15 @@ class AlertAnalysisAgent:
         All alerts share the same alertname + cluster + job.
         Runs the LLM tool-calling loop until the model produces a final text response.
         """
+        settings = get_settings()
         primary = alerts[0]
         messages: list[dict] = [
-            {"role": "system", "content": SYSTEM_PROMPT.format(language=self._language)},
+            {
+                "role": "system",
+                "content": SYSTEM_PROMPT.format(
+                    language=self._language, bot_name=settings.bot_container_name
+                ),
+            },
             {"role": "user", "content": build_user_message(alerts)},
         ]
         used_tools: set[str] = set()

@@ -146,9 +146,78 @@ async def call_tool(name: str, arguments: str | dict) -> str:
 
         # Call with original name, but route via client stored for prefixed name
         result = await client.call_tool(original_name, kwargs)
-        return _redact_secrets(result)
+        redacted = _redact_secrets(result)
+        return _process_tool_result(redacted)
 
     return json.dumps({"error": f"Unknown tool: {name!r}"})
+
+
+def _process_tool_result(text: str, max_chars: int = 8000) -> str:
+    """
+    Process raw tool output to save LLM context:
+    1. Deduplicate identical items in JSON lists (common for logs).
+    2. Truncate long strings with a summary.
+    """
+    if not text:
+        return text
+
+    # Try to parse as JSON for smarter deduplication
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        # Not JSON, just truncate if needed
+        if len(text) <= max_chars:
+            return text
+        return f"{text[:max_chars]}...\n\n[TRUNCATED: output too long ({len(text)} chars)]"
+
+    processed_data = _deduplicate_json(data)
+    final_text = json.dumps(processed_data, indent=2, ensure_ascii=False)
+
+    if len(final_text) <= max_chars:
+        return final_text
+
+    return f"{final_text[:max_chars]}...\n\n[TRUNCATED: output too long ({len(final_text)} chars)]"
+
+
+def _deduplicate_json(data: Any) -> Any:
+    """Recursively deduplicate items in lists while keeping counts."""
+    if isinstance(data, list):
+        if not data:
+            return data
+        
+        # Count occurrences of unique items (serialized for hashing)
+        counts = {}
+        order = []
+        for item in data:
+            # Process sub-items first
+            processed_item = _deduplicate_json(item)
+            key = json.dumps(processed_item, sort_keys=True)
+            if key not in counts:
+                counts[key] = {"item": processed_item, "count": 1}
+                order.append(key)
+            else:
+                counts[key]["count"] += 1
+        
+        result = []
+        for key in order:
+            entry = counts[key]
+            item = entry["item"]
+            count = entry["count"]
+            
+            if count > 1:
+                # If it's a dict, add the count inside it
+                if isinstance(item, dict):
+                    item["_bot_occurrence_count"] = count
+                else:
+                    # Otherwise wrap or append (though dicts are most common for logs)
+                    item = f"{item} (repeated {count} times)"
+            result.append(item)
+        return result
+
+    if isinstance(data, dict):
+        return {k: _deduplicate_json(v) for k, v in data.items()}
+
+    return data
 
 
 async def shutdown_mcp():
