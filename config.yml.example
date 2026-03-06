@@ -41,15 +41,15 @@ mcp_servers:
   # https://github.com/elastic/mcp-server-elasticsearch
   # Install: npm install -g @elastic/mcp-server-elasticsearch
   # ─────────────────────────────────────────────────────────────────────────────
-  #
-  # NOTE: The server name is used as a TOOL PREFIX.
-  # Tools will be available as "yandex-es__search", "yandex-es__list_indices", etc.
-  # The LLM will route to these tools when it sees the matching "cluster" label.
   yandex-production-elasticsearch:
     command: "npx"
     args:
       - "-y"
       - "@elastic/mcp-server-elasticsearch"
+    # Limit this MCP server so it is ONLY used for alerts from the 'prod' cluster
+    condition:
+      labels:
+        cluster: "prod"
     # read_only: true filters out write-capable tools (create, delete, bulk, etc.)
     # Recommended when ES has no auth.
     read_only: true

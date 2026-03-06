@@ -8,7 +8,7 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
-from ai_observability_bot.parser.filtering import IgnoreRule
+from ai_observability_bot.parser.filtering import FilterCondition, IgnoreRule
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,8 @@ class MCPServerConfig(BaseModel):
     command: str
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] | None = None
-    read_only: bool = False  # if True, only allow read-like tools (block create/delete/update)
+    read_only: bool = False  # if True, only allow read-like tools
+    condition: FilterCondition | None = None  # Optional rule to restrict server usage
 
 
 class Settings(BaseSettings):

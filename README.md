@@ -75,7 +75,8 @@ uv run python -m ai_observability_bot.bot.main
 The bot is a pure MCP orchestrator. It doesn't have built-in tools. Instead, it connects to external MCP servers via Stdio (Standard Input/Output) on startup.
 
 - **Dynamic Discovery**: The bot automatically downloads tools from each MCP server and provides them to the LLM.
-- **Unified Registry**: All tools are merged into a single schema for the LLM.
+- **Rule-based Routing**: You can use `condition` blocks (same syntax as Alert Filtering) to restrict an MCP server so it's only used for specific alerts (e.g., use the Prod Database MCP server only for `cluster: prod` alerts).
+- **Unified Registry**: All allowed tools are merged into a single schema for the LLM.
 - **Flexibility**: You can swap or add any MCP server without changing the bot's core code.
 
 ## Alert Filtering

@@ -98,9 +98,19 @@ async def register_external_mcp(
         raise
 
 
-def get_tools_schema() -> list[dict]:
-    """Get the schema of all registered external tools."""
-    return _EXTERNAL_TOOL_SCHEMAS
+def get_tools_schema(allowed_servers: list[str] | None = None) -> list[dict]:
+    """
+    Get the schema of registered external tools.
+    If allowed_servers is provided, only return tools for those specific servers.
+    """
+    if allowed_servers is None:
+        return _EXTERNAL_TOOL_SCHEMAS
+
+    return [
+        tool
+        for tool in _EXTERNAL_TOOL_SCHEMAS
+        if any(tool["function"]["name"].startswith(f"{server}__") for server in allowed_servers)
+    ]
 
 
 def _redact_secrets(text: str) -> str:

@@ -5,7 +5,7 @@ import logging
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessage
 
-from ai_observability_bot.config import get_settings
+from ai_observability_bot.config import get_mcp_registry, get_settings
 from ai_observability_bot.llm.prompts import SYSTEM_PROMPT, build_user_message
 from ai_observability_bot.mcp.registry import call_tool, get_tools_schema
 from ai_observability_bot.parser.alert_parser import Alert
@@ -44,6 +44,20 @@ class AlertAnalysisAgent:
         ]
         used_tools: set[str] = set()
 
+        # Determine which external MCP servers are allowed for this alert group
+        registry = get_mcp_registry()
+        allowed_servers: list[str] = []
+        for server in registry.all_configs():
+            if server.condition is None or server.condition.matches(primary):
+                allowed_servers.append(server.name)
+            else:
+                logger.debug(
+                    "Server %r blocked for group %s by condition", server.name, primary.alertname
+                )
+        
+        # Get schema containing only tools from allowed servers
+        tools_schema = get_tools_schema(allowed_servers=allowed_servers)
+
         for iteration in range(self._max_iterations):
             logger.debug(
                 "LLM iteration %d/%d for group %s (%d alert(s))",
@@ -56,8 +70,8 @@ class AlertAnalysisAgent:
             response = await self._client.chat.completions.create(
                 model=self._model,
                 messages=messages,
-                tools=get_tools_schema(),
-                tool_choice="auto",
+                tools=tools_schema if tools_schema else None,
+                tool_choice="auto" if tools_schema else "none",
             )
 
             message: ChatCompletionMessage = response.choices[0].message
