@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ai_health_bot.parser.alert_parser import AlertStatus, parse_alert_message
+from ai_observability_bot.parser.alert_parser import AlertStatus, parse_alert_message
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

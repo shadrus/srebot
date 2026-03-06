@@ -8,7 +8,7 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
-from ai_health_bot.parser.filtering import IgnoreRule
+from ai_observability_bot.parser.filtering import IgnoreRule
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +25,11 @@ class MCPServerConfig(BaseModel):
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env", 
-        env_file_encoding="utf-8", 
+        env_file=".env",
+        env_file_encoding="utf-8",
         yaml_file="config.yml",
         yaml_file_encoding="utf-8",
-        extra="ignore"
+        extra="ignore",
     )
 
     # Telegram
@@ -100,7 +100,7 @@ class MCPServerRegistry:
             if not cfg.name:
                 cfg.name = name
             servers[name] = cfg
-        
+
         logger.info("Loaded %d MCP server(s) config: %s", len(servers), list(servers))
         return cls(servers)
 

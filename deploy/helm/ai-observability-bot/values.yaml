@@ -1,10 +1,10 @@
-# Default values for ai-health-bot.
+# Default values for ai-observability-bot.
 # This is a YAML-file that represents the configuration of your application.
 
 replicaCount: 1
 
 image:
-  repository: ai-health-bot
+  repository: ai-observability-bot
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
   tag: ""
@@ -27,13 +27,13 @@ podAnnotations: {}
 podSecurityContext: {}
   # fsGroup: 2000
 
-securityContext: {}
+securityContext:
   # capabilities:
   #   drop:
   #   - ALL
   # readOnlyRootFilesystem: true
-  # runAsNonRoot: true
-  # runAsUser: 1000
+  runAsNonRoot: true
+  runAsUser: 1000
 
 # ------------------------------------------------------------------------------
 # Bot Configuration (config.yml)
@@ -88,13 +88,13 @@ redis:
   # For simplicity, let's assume bitnami/redis as a dependency or a simple standalone.
   # In this basic chart, we can just use a separate deployment or sidecar.
 
-resources: {}
-  # limits:
-  #   cpu: 500m
-  #   memory: 512Mi
-  # requests:
-  #   cpu: 100m
-  #   memory: 256Mi
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 256Mi
 
 nodeSelector: {}
 

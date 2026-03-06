@@ -1,4 +1,4 @@
-# AI Health Bot 🤖
+# AI Observability Bot 🤖
 
 Telegram bot that monitors a Prometheus Alertmanager channel, analyzes each new alert using an LLM (any OpenAI-compatible API) with external **MCP (Model Context Protocol)** tools, and replies with a root-cause analysis in the same thread.
 

@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "ai-health-bot"
+name = "ai-observability-bot"
 version = "0.1.0"
 description = "Telegram bot that analyzes Prometheus alerts using LLM and MCP tools"
 requires-python = ">=3.12"  # Tested on Python 3.14.3
@@ -15,10 +15,11 @@ dependencies = [
     "pyyaml>=6.0",
     "redis[hiredis]>=5.0",
     "mcp>=1.0.0",
+    "aiohttp>=3.13.3",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/ai_health_bot"]
+packages = ["src/ai_observability_bot"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

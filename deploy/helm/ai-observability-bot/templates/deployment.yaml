@@ -1,14 +1,14 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "ai-health-bot.fullname" . }}
+  name: {{ include "ai-observability-bot.fullname" . }}
   labels:
-    {{- include "ai-health-bot.labels" . | nindent 4 }}
+    {{- include "ai-observability-bot.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      {{- include "ai-health-bot.selectorLabels" . | nindent 6 }}
+      {{- include "ai-observability-bot.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       {{- with .Values.podAnnotations }}
@@ -16,13 +16,13 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
-        {{- include "ai-health-bot.selectorLabels" . | nindent 8 }}
+        {{- include "ai-observability-bot.selectorLabels" . | nindent 8 }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "ai-health-bot.fullname" . }}
+      serviceAccountName: {{ include "ai-observability-bot.fullname" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -35,18 +35,34 @@ spec:
             - name: TELEGRAM_BOT_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ if .Values.secrets.existingSecret }}{{ .Values.secrets.existingSecret }}{{ else }}{{ include "ai-health-bot.fullname" . }}-secrets{{ end }}
+                  name: {{ if .Values.secrets.existingSecret }}{{ .Values.secrets.existingSecret }}{{ else }}{{ include "ai-observability-bot.fullname" . }}-secrets{{ end }}
                   key: TELEGRAM_BOT_TOKEN
             - name: TELEGRAM_CHANNEL_ID
               valueFrom:
                 secretKeyRef:
-                  name: {{ if .Values.secrets.existingSecret }}{{ .Values.secrets.existingSecret }}{{ else }}{{ include "ai-health-bot.fullname" . }}-secrets{{ end }}
+                  name: {{ if .Values.secrets.existingSecret }}{{ .Values.secrets.existingSecret }}{{ else }}{{ include "ai-observability-bot.fullname" . }}-secrets{{ end }}
                   key: TELEGRAM_CHANNEL_ID
             - name: LLM_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ if .Values.secrets.existingSecret }}{{ .Values.secrets.existingSecret }}{{ else }}{{ include "ai-health-bot.fullname" . }}-secrets{{ end }}
+                  name: {{ if .Values.secrets.existingSecret }}{{ .Values.secrets.existingSecret }}{{ else }}{{ include "ai-observability-bot.fullname" . }}-secrets{{ end }}
                   key: LLM_API_KEY
+          ports:
+            - name: health
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
           volumeMounts:
             - name: config-volume
               mountPath: /app/config.yml
@@ -57,7 +73,7 @@ spec:
       volumes:
         - name: config-volume
           configMap:
-            name: {{ include "ai-health-bot.fullname" . }}-config
+            name: {{ include "ai-observability-bot.fullname" . }}-config
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

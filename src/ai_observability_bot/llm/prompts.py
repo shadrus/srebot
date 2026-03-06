@@ -1,6 +1,6 @@
 """LLM prompts for alert analysis."""
 
-from ai_health_bot.parser.alert_parser import Alert
+from ai_observability_bot.parser.alert_parser import Alert
 
 # ruff: noqa: E501  — long lines inside the prompt string are intentional
 SYSTEM_PROMPT = """\
@@ -54,12 +54,8 @@ def build_user_message(alerts: list[Alert]) -> str:
     primary = alerts[0]
 
     # Shared labels (from primary — all have the same alertname/cluster/job)
-    shared_labels = "\n".join(
-        f"  {k} = {v}" for k, v in sorted(primary.labels.items())
-    )
-    annotations_text = "\n".join(
-        f"  {k} = {v}" for k, v in sorted(primary.annotations.items())
-    )
+    shared_labels = "\n".join(f"  {k} = {v}" for k, v in sorted(primary.labels.items()))
+    annotations_text = "\n".join(f"  {k} = {v}" for k, v in sorted(primary.annotations.items()))
 
     count = len(alerts)
     header = (
@@ -84,18 +80,13 @@ def build_user_message(alerts: list[Alert]) -> str:
         all_keys = set()
         for a in alerts:
             all_keys.update(a.labels)
-        varying_keys = sorted(
-            k for k in all_keys
-            if len({a.labels.get(k) for a in alerts}) > 1
-        )
+        varying_keys = sorted(k for k in all_keys if len({a.labels.get(k) for a in alerts}) > 1)
 
         if varying_keys:
             parts.append("")
             parts.append(f"**{count} affected instances** (varying labels):")
             for i, alert in enumerate(alerts, 1):
-                diff = ", ".join(
-                    f"{k}={alert.labels.get(k, '—')}" for k in varying_keys
-                )
+                diff = ", ".join(f"{k}={alert.labels.get(k, '—')}" for k in varying_keys)
                 parts.append(f"  [{i}] {diff}")
 
     if primary.source_url:

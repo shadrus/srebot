@@ -9,11 +9,11 @@ from telegram import Message, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from ai_health_bot.config import get_settings
-from ai_health_bot.llm.agent import get_agent
-from ai_health_bot.parser.alert_parser import Alert, AlertStatus, parse_alert_message
-from ai_health_bot.parser.filtering import get_ignore_registry
-from ai_health_bot.state.store import get_store
+from ai_observability_bot.config import get_settings
+from ai_observability_bot.llm.agent import get_agent
+from ai_observability_bot.parser.alert_parser import Alert, AlertStatus, parse_alert_message
+from ai_observability_bot.parser.filtering import get_ignore_registry
+from ai_observability_bot.state.store import get_store
 
 logger = logging.getLogger(__name__)
 
@@ -78,9 +78,7 @@ async def _handle_alert_group(
 
     # --- FIRING ---
     if not await store.is_new(group_fp):
-        logger.info(
-            "Duplicate firing group (skip): %s [%s]", label, group_fp
-        )
+        logger.info("Duplicate firing group (skip): %s [%s]", label, group_fp)
         return
 
     logger.info("New firing group [%s]: %s (%d alert(s))", group_fp, label, len(alerts))
@@ -111,9 +109,7 @@ async def _handle_alert_group(
         analysis = await agent.analyze(alerts)
     except Exception as exc:
         logger.exception("LLM analysis failed for group %s", group_fp)
-        analysis = (
-            f"⚠️ <b>Analysis failed:</b> <code>{exc}</code>\nPlease investigate manually."
-        )
+        analysis = f"⚠️ <b>Analysis failed:</b> <code>{exc}</code>\nPlease investigate manually."
 
     if dry_run:
         logger.info("[DRY-RUN] Analysis result for group %s:\n%s", group_fp, analysis)
@@ -171,9 +167,7 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     for alert in active_alerts:
         groups[_group_key(alert)].append(alert)
 
-    logger.info(
-        "Grouped %d alert(s) into %d group(s)", len(active_alerts), len(groups)
-    )
+    logger.info("Grouped %d alert(s) into %d group(s)", len(active_alerts), len(groups))
 
     results = await asyncio.gather(
         *[_handle_alert_group(fp, group, msg) for fp, group in groups.items()],

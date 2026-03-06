@@ -1,6 +1,6 @@
 # AGENTS.md — Development Standards
 
-This document defines the standards for all contributors (human and AI agents) working on **ai-health-bot**.
+This document defines the standards for all contributors (human and AI agents) working on **ai-observability-bot**.
 
 ---
 

@@ -49,7 +49,7 @@ async def register_external_mcp(
     read_only: bool = False,
 ):
     """Connect to an external MCP server and register its tools with a prefix."""
-    from ai_health_bot.mcp.mcp_client import ExternalMCPClient
+    from ai_observability_bot.mcp.mcp_client import ExternalMCPClient
 
     client = ExternalMCPClient(command, args, env)
     try:
@@ -108,7 +108,7 @@ def _redact_secrets(text: str) -> str:
     if not isinstance(text, str):
         return text
     # Mask Bearer tokens
-    text = re.sub(r'(?i)Bearer\s+[A-Za-z0-9\-\._~\+\/]+=*', 'Bearer [REDACTED_BY_BOT]', text)
+    text = re.sub(r"(?i)Bearer\s+[A-Za-z0-9\-\._~\+\/]+=*", "Bearer [REDACTED_BY_BOT]", text)
     # Mask API keys, passwords, secrets
     text = re.sub(
         r'(?i)(password|secret|api[_-]?key)["\']?\s*[:=]\s*["\']([^"\']+)["\']',
@@ -125,7 +125,7 @@ async def call_tool(name: str, arguments: str | dict) -> str:
     """
     if name in _EXTERNAL_TOOL_TO_CLIENT:
         client, original_name = _EXTERNAL_TOOL_TO_CLIENT[name]
-        
+
         if isinstance(arguments, str):
             try:
                 kwargs = json.loads(arguments)

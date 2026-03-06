@@ -1,6 +1,0 @@
-apiVersion: v2
-name: ai-health-bot
-description: A Helm chart for AI Health Bot
-type: application
-version: 0.1.0
-appVersion: "0.1.0"

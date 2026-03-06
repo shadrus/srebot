@@ -3,18 +3,18 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "ai-health-bot.fullname" . }}-redis
+  name: {{ include "ai-observability-bot.fullname" . }}-redis
   labels:
-    {{- include "ai-health-bot.labels" . | nindent 4 }}
+    {{- include "ai-observability-bot.labels" . | nindent 4 }}
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: {{ include "ai-health-bot.name" . }}-redis
+      app: {{ include "ai-observability-bot.name" . }}-redis
   template:
     metadata:
       labels:
-        app: {{ include "ai-health-bot.name" . }}-redis
+        app: {{ include "ai-observability-bot.name" . }}-redis
     spec:
       containers:
         - name: redis
@@ -25,14 +25,14 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "ai-health-bot.fullname" . }}-redis
+  name: {{ include "ai-observability-bot.fullname" . }}-redis
   labels:
-    {{- include "ai-health-bot.labels" . | nindent 4 }}
+    {{- include "ai-observability-bot.labels" . | nindent 4 }}
 spec:
   ports:
     - port: 6379
       targetPort: 6379
   selector:
-    app: {{ include "ai-health-bot.name" . }}-redis
+    app: {{ include "ai-observability-bot.name" . }}-redis
 {{- end -}}
 {{- end -}}

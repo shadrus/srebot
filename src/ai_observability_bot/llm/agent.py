@@ -5,10 +5,10 @@ import logging
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessage
 
-from ai_health_bot.config import get_settings
-from ai_health_bot.llm.prompts import SYSTEM_PROMPT, build_user_message
-from ai_health_bot.mcp.registry import call_tool, get_tools_schema
-from ai_health_bot.parser.alert_parser import Alert
+from ai_observability_bot.config import get_settings
+from ai_observability_bot.llm.prompts import SYSTEM_PROMPT, build_user_message
+from ai_observability_bot.mcp.registry import call_tool, get_tools_schema
+from ai_observability_bot.parser.alert_parser import Alert
 
 logger = logging.getLogger(__name__)
 

@@ -5,7 +5,7 @@ import logging
 
 import redis.asyncio as aioredis
 
-from ai_health_bot.config import get_settings
+from ai_observability_bot.config import get_settings
 
 logger = logging.getLogger(__name__)
 
