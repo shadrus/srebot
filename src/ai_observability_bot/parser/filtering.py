@@ -13,11 +13,13 @@ class FilterCondition(BaseModel):
     """
     A single condition or a group of conditions.
     If 'labels' is set, it matches if all labels match (AND).
+    If 'not_labels' is set, it matches if all labels DO NOT match (AND).
     If 'any' is set, it matches if ANY sub-condition matches (OR).
     If 'all' is set, it matches if ALL sub-conditions match (AND).
     """
 
     labels: dict[str, str] = Field(default_factory=dict)
+    not_labels: dict[str, str] = Field(default_factory=dict)
     any: list["FilterCondition"] = Field(default_factory=list)
     all: list["FilterCondition"] = Field(default_factory=list)
 
@@ -25,6 +27,11 @@ class FilterCondition(BaseModel):
         # Check direct labels (AND logic)
         for k, v in self.labels.items():
             if alert.labels.get(k) != v:
+                return False
+
+        # Check not_labels (AND logic, matches if label is different or missing)
+        for k, v in self.not_labels.items():
+            if alert.labels.get(k) == v:
                 return False
 
         # Check 'all' sub-conditions (AND logic)
@@ -42,8 +49,8 @@ class FilterCondition(BaseModel):
             if not found_match:
                 return False
 
-        # If we have no labels, no 'any', and no 'all', it's an empty condition.
-        if not self.labels and not self.any and not self.all:
+        # If we have no labels, no 'not_labels', no 'any', and no 'all', it's an empty condition.
+        if not self.labels and not self.not_labels and not self.any and not self.all:
             return False
 
         return True

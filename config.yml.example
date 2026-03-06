@@ -77,3 +77,8 @@ ignore_rules:
             cluster: "dev-cluster"
         - labels:
             namespace: "test-env"
+
+  # - name: "Ignore everything except target cluster (run only for this cluster)"
+  #   condition:
+  #     not_labels:
+  #       cluster: "target-cluster"

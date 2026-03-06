@@ -53,7 +53,7 @@ mcp_servers:
 docker compose up -d
 
 # Locally
-uv run python -m ai_health_bot.bot.main
+uv run python -m ai_observability_bot.bot.main
 ```
 
 ## Environment Variables
@@ -67,7 +67,7 @@ uv run python -m ai_health_bot.bot.main
 | `LLM_MODEL` | Model name (e.g. `gpt-4o`) |
 | `REDIS_URL` | Redis connection URL |
 | `ALERT_FINGERPRINT_TTL` | Seconds to remember firing alert (default: 86400) |
-| `MCP_SERVERS_CONFIG_PATH` | Path to `mcp_servers.yml` (default: `mcp_servers.yml`) |
+| `CONFIG_PATH` | Path to `config.yml` (default: `config.yml`) |
 | `LOG_LEVEL` | `DEBUG` / `INFO` / `WARNING` |
 
 ## MCP Multi-Server Support
@@ -80,18 +80,22 @@ The bot is a pure MCP orchestrator. It doesn't have built-in tools. Instead, it 
 
 ## Alert Filtering
 
-You can ignore specific alerts based on their labels using flexible AND/OR logic in `ignore_rules.yml`.
+You can ignore specific alerts based on their labels using flexible AND/OR/NOT logic in `config.yml`.
 
 - **Labels (AND)**: Matches if all specified labels match exactly.
+- **Not Labels (NOT)**: Matches if all specified labels DO NOT match (or are missing).
 - **Any (OR)**: Matches if at least one sub-condition matches.
 - **All (AND)**: Matches if all sub-conditions match.
 
-Example `ignore_rules.yml`:
+Example `config.yml`:
 ```yaml
 ignore_rules:
   - name: "Ignore Watchdog"
     condition:
       labels: { alertname: "Watchdog" }
+  - name: "Ignore everything except prod"
+    condition:
+      not_labels: { cluster: "prod" }
   - name: "Ignore Prod-DB severity info"
     condition:
       all:
@@ -118,10 +122,11 @@ uv run ruff check src/ tests/
 ## Project Structure
 
 ```
-src/ai_health_bot/
+src/ai_observability_bot/
 ├── config.py          # Settings + MCPServerRegistry
 ├── parser/
-│   └── alert_parser.py  # Telegram message parser
+│   ├── alert_parser.py  # Telegram message parser
+│   └── filtering.py     # Alert filtering logic
 ├── state/
 │   └── store.py         # Redis dedup store
 ├── mcp/
