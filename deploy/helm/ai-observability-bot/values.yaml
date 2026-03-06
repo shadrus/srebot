@@ -58,6 +58,10 @@ config:
         - "prometheus-mcp-server"
       env:
         PROMETHEUS_URL: "http://prometheus-operated.monitoring.svc:9090"
+      # Limit this MCP server so it is ONLY used for alerts from a specific cluster
+      # condition:
+      #   labels:
+      #     cluster: "prod"
 
   # Alert ignore rules
   ignore_rules:
