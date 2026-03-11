@@ -90,19 +90,32 @@ class AlertAnalysisAgent:
                 # Final answer
                 content = message.content or "⚠️ Analysis returned empty response."
                 if used_tools:
-                    tools_str = ", ".join(f"<code>{t}</code>" for t in sorted(used_tools))
-                    content += f"\n\n<b>🛠 Tools used:</b> {tools_str}"
+                    tool_names = {sig.split(":", 1)[0] for sig in used_tools}
+                    tools_str = ", ".join(f"<code>{t}</code>" for t in sorted(tool_names))
+                    content += f"\n\n<b>🛠 Tools used ({iteration + 1}):</b> {tools_str}"
                 return content
 
             # Execute all requested tool calls
             for tool_call in message.tool_calls:
                 fn_name = tool_call.function.name
                 fn_args = tool_call.function.arguments
-                used_tools.add(fn_name)
-                logger.info("Tool call: %s(%s)", fn_name, fn_args[:200])
+                
+                # Check for duplicate calls with exact same arguments
+                call_signature = f"{fn_name}:{fn_args}"
+                
+                if call_signature in used_tools:
+                    logger.warning("Prevented duplicate tool call: %s", fn_name)
+                    result = (
+                        f"⚠️ Error: You already called '{fn_name}' with exactly these arguments. "
+                        "The result is already in the conversation history above. "
+                        "Do NOT repeat this exact call. Try a different query or provide your final analysis."
+                    )
+                else:
+                    used_tools.add(call_signature)
+                    logger.info("Tool call: %s(%s)", fn_name, fn_args[:200])
 
-                result = await call_tool(fn_name, fn_args)
-                logger.debug("Tool result for %s: %s", fn_name, result[:500])
+                    result = await call_tool(fn_name, fn_args)
+                    logger.debug("Tool result for %s: %s", fn_name, result[:500])
 
                 messages.append(
                     {
