@@ -68,10 +68,18 @@ class ExternalMCPClient:
             result = await self._session.call_tool(name, arguments)
             # MCP results can have multiple components (text, image, resource)
             texts = [c.text for c in result.content if hasattr(c, "text")]
-            return "\n".join(texts)
+            content = "\n".join(texts)
+
+            if getattr(result, "isError", False):
+                return json.dumps({"error": content or "Unknown tool error"})
+
+            return content
         except Exception as e:
-            logger.error("Error calling external MCP tool %s: %s", name, e)
-            return json.dumps({"error": str(e)})
+            error_msg = str(e)
+            if not error_msg:
+                error_msg = type(e).__name__
+            logger.error("Error calling external MCP tool %s: %s", name, error_msg)
+            return json.dumps({"error": error_msg})
 
     async def close(self):
         """Close the connection and session."""
