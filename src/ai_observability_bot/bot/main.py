@@ -1,46 +1,15 @@
-"""Entry point — sets up and runs the Telegram bot."""
+"""Entry point — resolves the active bot integration and runs it."""
 
+import asyncio
 import logging
 import sys
 
-from aiohttp import web
-from telegram.ext import ApplicationBuilder, MessageHandler, filters
-
-from ai_observability_bot.bot.handlers import channel_post_handler
-from ai_observability_bot.config import get_mcp_registry, get_settings
-from ai_observability_bot.mcp.registry import register_external_mcp, shutdown_mcp
+# Importing the bot package triggers registration of all built-in integrations.
+import ai_observability_bot.bot  # noqa: F401
+from ai_observability_bot.bot.health import start_health_server
+from ai_observability_bot.bot.registry import create_bot
+from ai_observability_bot.config import get_settings
 from ai_observability_bot.state.store import get_store
-
-
-async def _liveness_handler(request: web.Request) -> web.Response:
-    """Always returns 200 OK — indicates the event loop is running."""
-    return web.Response(text="OK", status=200)
-
-
-async def _readiness_handler(request: web.Request) -> web.Response:
-    """Checks critical dependencies, primarily Redis."""
-    try:
-        store = await get_store()
-        # Ping redis to ensure connection is alive
-        await store.ping()
-        return web.Response(text="Ready", status=200)
-    except Exception as e:
-        logger = logging.getLogger(__name__)
-        logger.error("Readiness check failed: %s", e)
-        return web.Response(text=f"Not Ready: {e}", status=503)
-
-
-async def _start_health_server() -> web.AppRunner:
-    """Starts the aiohttp healthcheck server."""
-    app = web.Application()
-    app.router.add_get("/livez", _liveness_handler)
-    app.router.add_get("/readyz", _readiness_handler)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", 8080)
-    await site.start()
-    return runner
 
 
 def _setup_logging(level: str) -> None:
@@ -56,47 +25,11 @@ def _setup_logging(level: str) -> None:
     logging.getLogger("telegram").setLevel(logging.WARNING)
 
 
-async def post_init(application) -> None:
-    """Called after bot is initialized — warm up connections."""
-    # Start healthcheck server as early as possible to satisfy K8s probes
-    application.bot_data["health_runner"] = await _start_health_server()
-    logger = logging.getLogger(__name__)
-    logger.info("Healthcheck HTTP server started on port 8080 (/livez, /readyz)")
-
-    # Ensure Redis is reachable
+async def _startup() -> None:
+    """Warm up shared infrastructure before handing off to the integration."""
+    await start_health_server()
     await get_store()
-    logger.info("Redis connection established")
-
-    # Connect to all external MCP servers
-    registry = get_mcp_registry()
-    configs = registry.all_configs()
-    if not configs:
-        logger.warning("No MCP servers configured! Check mcp_servers.yml")
-        return
-
-    for cfg in configs:
-        logger.info("Registering MCP server: %s", cfg.name)
-        try:
-            await register_external_mcp(
-                name=cfg.name,
-                command=cfg.command,
-                args=cfg.args,
-                env=cfg.env,
-                read_only=cfg.read_only,
-            )
-        except Exception as e:
-            logger.error("Failed to register MCP server %s: %s", cfg.name, e)
-
-
-async def post_shutdown(application) -> None:
-    """Cleanup on shutdown."""
-    # Stop healthcheck server
-    if "health_runner" in application.bot_data:
-        await application.bot_data["health_runner"].cleanup()
-
-    await shutdown_mcp()
-    store = await get_store()
-    await store.close()
+    logging.getLogger(__name__).info("Redis connection established")
 
 
 def main() -> None:
@@ -110,28 +43,28 @@ def main() -> None:
         "DRY-RUN 🔇" if settings.dry_run else "LIVE 📢",
     )
 
-    app = (
-        ApplicationBuilder()
-        .token(settings.telegram_bot_token)
-        .post_init(post_init)
-        .post_shutdown(post_shutdown)
-        .build()
-    )
+    try:
+        bot = create_bot(settings)
+    except RuntimeError as exc:
+        logger.critical("Bot startup failed: %s", exc)
+        sys.exit(1)
 
-    # Listen only to the configured channel (safety guard against accidental multi-channel usage)
-    app.add_handler(
-        MessageHandler(
-            (filters.ChatType.CHANNEL | filters.ChatType.GROUPS)
-            & filters.Chat(chat_id=settings.telegram_channel_id),
-            channel_post_handler,
+    # Run shared infrastructure (health server + Redis) before starting the bot.
+    # run_until_complete keeps the loop alive for the blocking bot.start() call.
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(_startup())
+        bot.start()
+    except Exception as exc:
+        logger.critical(
+            "Bot integration crashed during startup or polling: %s: %s",
+            type(exc).__name__,
+            exc,
         )
-    )
-
-    logger.info(
-        "Bot polling started. Listening for alerts in channel %d …",
-        settings.telegram_channel_id,
-    )
-    app.run_polling(drop_pending_updates=True)
+        sys.exit(1)
+    finally:
+        loop.close()
 
 
 if __name__ == "__main__":

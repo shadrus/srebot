@@ -1,4 +1,4 @@
-"""Telegram bot handlers — processes channel messages and orchestrates analysis."""
+"""Telegram bot integration handlers — processes channel messages and orchestrates analysis."""
 
 import asyncio
 import hashlib
@@ -137,6 +137,7 @@ async def _handle_alert_group(
 async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Handler for new channel posts.
+
     Parses Alertmanager messages, filters ignored alerts, groups by
     (alertname, cluster, job) and runs one analysis per group.
     """

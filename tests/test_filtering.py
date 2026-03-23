@@ -82,8 +82,8 @@ def test_ignore_registry_logic(sample_alert):
     registry = IgnoreRegistry(rules=[rule1])
     assert registry.should_ignore(sample_alert) is False
 def test_not_labels_condition():
-    from ai_observability_bot.parser.filtering import FilterCondition
     from ai_observability_bot.parser.alert_parser import Alert
+    from ai_observability_bot.parser.filtering import FilterCondition
 
     alert_prod = Alert(
         status="firing",

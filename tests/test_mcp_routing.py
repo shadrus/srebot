@@ -1,8 +1,10 @@
 import pytest
-from ai_observability_bot.parser.alert_parser import Alert, AlertStatus
-from ai_observability_bot.parser.filtering import FilterCondition
-from ai_observability_bot.config import MCPServerConfig, MCPServerRegistry
+
 import ai_observability_bot.mcp.registry as mcp_registry
+from ai_observability_bot.config import MCPServerConfig, MCPServerRegistry
+from ai_observability_bot.parser.alert_parser import Alert
+from ai_observability_bot.parser.filtering import FilterCondition
+
 
 @pytest.fixture
 def mock_registry(mocker):

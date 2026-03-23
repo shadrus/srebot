@@ -1,7 +1,10 @@
-import pytest
 from unittest.mock import AsyncMock, MagicMock
-from ai_observability_bot.parser.alert_parser import Alert
+
+import pytest
+
 from ai_observability_bot.llm.agent import AlertAnalysisAgent
+from ai_observability_bot.parser.alert_parser import Alert
+
 
 @pytest.mark.asyncio
 async def test_agent_includes_iteration_count(mocker):

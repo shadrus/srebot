@@ -1,8 +1,10 @@
-import pytest
 from unittest.mock import AsyncMock, MagicMock
-from ai_observability_bot.parser.alert_parser import Alert
+
+import pytest
+
 from ai_observability_bot.llm.agent import AlertAnalysisAgent
-import ai_observability_bot.llm.agent as agent_module
+from ai_observability_bot.parser.alert_parser import Alert
+
 
 @pytest.mark.asyncio
 async def test_agent_soft_correction_loop_prevention(mocker, caplog):

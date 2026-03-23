@@ -1,7 +1,10 @@
-import pytest
 import json
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
 from ai_observability_bot.mcp.mcp_client import ExternalMCPClient
+
 
 @pytest.mark.asyncio
 async def test_call_tool_handles_exception_with_empty_str():
