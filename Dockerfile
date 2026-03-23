@@ -29,18 +29,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Pre-install/cache common MCP servers to avoid downloads at runtime
-# For npm-based servers:
-RUN npm install -g @elastic/mcp-server-elasticsearch
+# Note: MCP servers are dynamically downloaded at runtime via 'npx -y' and 'uvx' configured in config.yml.
+# No need to pre-install them here.
 
 WORKDIR /app
 
 # Restore uv to final image to support "uvx" external commands
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
-# Pre-cache uvx tools (this downloads them into /root/.cache/uv or similar)
-# We run them once to ensure they are downloaded and cached.
-RUN uvx prometheus-mcp-server --help || true
+# No pre-caching of uvx tools is needed since they are fetched dynamically via config.yml at runtime.
 
 # Copy the pre-built virtual environment and source code from the builder stage
 COPY --from=builder /app/.venv /app/.venv
