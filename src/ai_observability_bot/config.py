@@ -37,10 +37,9 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_channel_id: int = 0
 
-    # LLM — any OpenAI-compatible provider
-    llm_base_url: str = "https://api.openai.com/v1"
-    llm_api_key: str = ""
-    llm_model: str = "gpt-4o"
+    # SaaS Control Plane
+    saas_ws_url: str = "ws://localhost:8000/api/v1/agent/connect"
+    saas_agent_token: str = ""
     llm_response_language: str = "English"
     llm_max_iterations: int = 10  # tool-call loop guard
     bot_container_name: str = "ai-observability-bot"  # used for self-filtering in logs
