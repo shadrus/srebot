@@ -39,8 +39,7 @@ securityContext:
 # Bot Configuration (config.yml)
 # ------------------------------------------------------------------------------
 config:
-  llm_base_url: "https://api.openai.com/v1"
-  llm_model: "gpt-4o"
+  saas_ws_url: "ws://srebot-backend.monitoring.svc.cluster.local:8000/api/v1/agent/connect"
   llm_response_language: "English"
   llm_max_iterations: 10
   
@@ -78,7 +77,7 @@ secrets:
   # Otherwise, provide them here:
   telegram_bot_token: ""
   telegram_channel_id: ""
-  llm_api_key: ""
+  saas_agent_token: ""
 
 # ------------------------------------------------------------------------------
 # Redis Storage

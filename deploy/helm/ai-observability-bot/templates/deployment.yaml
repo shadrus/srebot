@@ -42,11 +42,13 @@ spec:
                 secretKeyRef:
                   name: {{ if .Values.secrets.existingSecret }}{{ .Values.secrets.existingSecret }}{{ else }}{{ include "ai-observability-bot.fullname" . }}-secrets{{ end }}
                   key: TELEGRAM_CHANNEL_ID
-            - name: LLM_API_KEY
+            - name: SAAS_AGENT_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ if .Values.secrets.existingSecret }}{{ .Values.secrets.existingSecret }}{{ else }}{{ include "ai-observability-bot.fullname" . }}-secrets{{ end }}
-                  key: LLM_API_KEY
+                  key: SAAS_AGENT_TOKEN
+            - name: SAAS_WS_URL
+              value: {{ .Values.config.saas_ws_url | quote }}
           ports:
             - name: health
               containerPort: 8080
