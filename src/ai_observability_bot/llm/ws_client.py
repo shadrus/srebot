@@ -1,4 +1,5 @@
 """WebSocket Client to communicate with SaaS Control Plane."""
+import asyncio
 import json
 import logging
 from typing import Any
@@ -44,29 +45,36 @@ class SaaSWSClient:
                             content += f"\n\n<b>🛠 Tools used:</b> {tools_str}"
                         return content
                         
-                    elif event == "execute_tool":
-                        tool_call_id = response.get("tool_call_id")
-                        tool_name = response.get("tool_name")
-                        args = response.get("args", {})
+                    elif event == "execute_tools":
+                        tools = response.get("tools", [])
                         
-                        logger.info("SaaS requested tool execution: %s", tool_name)
-                        used_tools.add(tool_name)
-                        
-                        try:
-                            # executor is a callback that runs the local MCP tool
-                            # dict is usually stringified for call_tool
-                            args_str = json.dumps(args) if isinstance(args, dict) else args
-                            result = await tool_executor(tool_name, args_str)
-                            result_str = str(result)
-                        except Exception as e:
-                            logger.error("Tool %s failed: %s", tool_name, e)
-                            result_str = f"Error: {e}"
+                        async def run_tool(tc: dict) -> dict:
+                            t_id = tc.get("tool_call_id")
+                            t_name = tc.get("tool_name")
+                            t_args = tc.get("args", {})
                             
-                        # Send back the result
+                            logger.info("SaaS requested tool execution: %s", t_name)
+                            used_tools.add(t_name)
+                            
+                            try:
+                                args_str = (
+                                    json.dumps(t_args) if isinstance(t_args, dict) else t_args
+                                )
+                                result = await tool_executor(t_name, args_str)
+                                result_str = str(result)
+                            except Exception as e:
+                                logger.error("Tool %s failed: %s", t_name, e)
+                                result_str = f"Error: {e}"
+                                
+                            return {
+                                "tool_call_id": t_id,
+                                "data": result_str
+                            }
+                            
+                        results = await asyncio.gather(*(run_tool(tc) for tc in tools))
                         result_payload = {
-                            "event": "tool_result",
-                            "tool_call_id": tool_call_id,
-                            "data": result_str
+                            "event": "tools_result",
+                            "results": results
                         }
                         await websocket.send(json.dumps(result_payload))
                         
