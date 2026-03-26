@@ -38,8 +38,8 @@ def main() -> None:
 
     logger = logging.getLogger(__name__)
     logger.info(
-        "Starting AI Observability Bot (model=%s, mode=%s)",
-        settings.llm_model,
+        "Starting AI Observability Bot (on %s, mode=%s)",
+        settings.saas_ws_url,
         "DRY-RUN 🔇" if settings.dry_run else "LIVE 📢",
     )
 

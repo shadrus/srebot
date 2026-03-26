@@ -1,7 +1,7 @@
 # ------------------------------------------------------------------------------
 # Stage 1: Builder
 # ------------------------------------------------------------------------------
-FROM python:3.12-slim AS builder
+FROM python:3.13-slim AS builder
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
@@ -21,7 +21,7 @@ RUN uv sync --no-dev
 # ------------------------------------------------------------------------------
 # Stage 2: Runtime
 # ------------------------------------------------------------------------------
-FROM python:3.12-slim
+FROM python:3.13-slim
 
 # Install Node.js (LTS) — needed to run npx-based MCP servers (e.g. Elasticsearch)
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \

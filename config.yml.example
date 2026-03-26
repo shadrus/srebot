@@ -7,11 +7,10 @@
 telegram_bot_token: "your_bot_token_here"
 telegram_channel_id: -1001234567890
 
-# LLM settings
-llm_base_url: "https://api.openai.com/v1"
-llm_model: "gpt-4o"
+# SaaS Control Plane
+saas_agent_token: "tok_your_token_here"
+saas_ws_url: "ws://management.srebot.com/api/v1/agent/connect"
 llm_response_language: "English"
-llm_max_iterations: 10
 
 # Redis — alert deduplication state
 redis_url: "redis://redis:6379/0"
