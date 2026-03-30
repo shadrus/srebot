@@ -1,6 +1,31 @@
 apiVersion: v1
-entries:  
+entries:
   srebot:
+  - annotations:
+      artifacthub.io/license: PolyForm-Noncommercial-1.0.0
+      artifacthub.io/links: |
+        - name: Documentation
+          url: https://srebot.site360.tech/docs
+    apiVersion: v2
+    appVersion: 0.1.1
+    created: "2026-03-30T16:44:27.906072519Z"
+    description: AI-powered incident analyzer for Prometheus/Alertmanager in Telegram.
+    digest: 1cd9b82516b14ee4d4c4ac30fbcc92b9b65dee39dbc3ed8c6ff86292bee0c05d
+    home: https://srebot.site360.tech
+    icon: https://srebot.site360.tech/docs/logo.svg
+    keywords:
+    - sre
+    - ai
+    - monitoring
+    - alertmanager
+    - telegram
+    name: srebot
+    sources:
+    - https://github.com/shadrus/srebot
+    type: application
+    urls:
+    - https://github.com/shadrus/srebot/releases/download/srebot-0.1.1/srebot-0.1.1.tgz
+    version: 0.1.1
   - annotations:
       artifacthub.io/license: PolyForm-Noncommercial-1.0.0
       artifacthub.io/links: |
@@ -26,4 +51,4 @@ entries:
     urls:
     - https://github.com/shadrus/srebot/releases/download/srebot-0.1.0/srebot-0.1.0.tgz
     version: 0.1.0
-generated: "2026-03-30T16:33:30.913296063Z"
+generated: "2026-03-30T16:44:27.906080965Z"
