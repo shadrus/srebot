@@ -2,8 +2,9 @@
 
 import logging
 
-from telegram.error import TelegramError
+from telegram.error import NetworkError, TelegramError
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
+from telegram.request import HTTPXRequest
 
 from srebot.bot.base import BotIntegration
 from srebot.bot.telegram.handlers import channel_post_handler
@@ -44,9 +45,18 @@ class TelegramBotIntegration(BotIntegration):
         ``run_polling()`` manages its own event loop internally, so this
         method is intentionally synchronous.
         """
+        # Use a custom HTTPXRequest with increased timeouts to handle network instability.
+        request = HTTPXRequest(
+            connect_timeout=20,
+            read_timeout=30,
+            write_timeout=20,
+            pool_timeout=20,
+        )
+
         self._app = (
             ApplicationBuilder()
             .token(self._settings.telegram_bot_token)
+            .request(request)
             .post_init(self._post_init)
             .post_shutdown(self._post_shutdown)
             .build()
@@ -66,7 +76,13 @@ class TelegramBotIntegration(BotIntegration):
             "Telegram bot polling started. Listening for alerts in channel %d …",
             self._settings.telegram_channel_id,
         )
-        self._app.run_polling(drop_pending_updates=True)
+        self._app.run_polling(
+            drop_pending_updates=True,
+            bootstrap_retries=-1,  # Keep trying on startup
+            read_timeout=30,
+            connect_timeout=20,
+            timeout=20,  # Long polling timeout (must be < read_timeout)
+        )
 
     def stop(self) -> None:
         """Stop the Telegram application if it is running."""
@@ -110,7 +126,9 @@ class TelegramBotIntegration(BotIntegration):
     async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Log all Telegram errors that occur inside the polling loop."""
         exc = context.error
-        if isinstance(exc, TelegramError):
-            logger.error("Telegram error [%s]: %s", type(exc).__name__, exc)
+        if isinstance(exc, NetworkError):
+            logger.error("Telegram network error [%s]: %s", type(exc).__name__, exc)
+        elif isinstance(exc, TelegramError):
+            logger.error("Telegram API error [%s]: %s", type(exc).__name__, exc)
         else:
-            logger.exception("Unexpected error in Telegram handler", exc_info=exc)
+            logger.exception("Unexpected error in Telegram handler: %s", exc)
