@@ -26,4 +26,30 @@ entries:
     urls:
     - https://github.com/shadrus/ai-abservability-bot/releases/download/ai-observability-bot-0.1.1/ai-observability-bot-0.1.1.tgz
     version: 0.1.1
-generated: "2026-03-30T15:18:17.201182764Z"
+  srebot:
+  - annotations:
+      artifacthub.io/license: PolyForm-Noncommercial-1.0.0
+      artifacthub.io/links: |
+        - name: Documentation
+          url: https://srebot.site360.tech/docs
+    apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-03-30T16:33:30.913290423Z"
+    description: AI-powered incident analyzer for Prometheus/Alertmanager in Telegram.
+    digest: f34c3a26cb3c99de37f57646ec2d32ebaa9c863c8201b30b9edc1ac4e51776d2
+    home: https://srebot.site360.tech
+    icon: https://srebot.site360.tech/docs/logo.svg
+    keywords:
+    - sre
+    - ai
+    - monitoring
+    - alertmanager
+    - telegram
+    name: srebot
+    sources:
+    - https://github.com/shadrus/srebot
+    type: application
+    urls:
+    - https://github.com/shadrus/srebot/releases/download/srebot-0.1.0/srebot-0.1.0.tgz
+    version: 0.1.0
+generated: "2026-03-30T16:33:30.913296063Z"
