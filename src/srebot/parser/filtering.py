@@ -4,7 +4,7 @@ import logging
 
 from pydantic import BaseModel, Field
 
-from ai_observability_bot.parser.alert_parser import Alert
+from srebot.parser.alert_parser import Alert
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ _ignore_registry: IgnoreRegistry | None = None
 def get_ignore_registry() -> IgnoreRegistry:
     global _ignore_registry
     if _ignore_registry is None:
-        from ai_observability_bot.config import get_settings
+        from srebot.config import get_settings
 
         s = get_settings()
         _ignore_registry = IgnoreRegistry(s.ignore_rules)

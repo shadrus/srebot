@@ -5,11 +5,11 @@ import logging
 from telegram.error import TelegramError
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
-from ai_observability_bot.bot.base import BotIntegration
-from ai_observability_bot.bot.telegram.handlers import channel_post_handler
-from ai_observability_bot.config import Settings, get_mcp_registry
-from ai_observability_bot.mcp.registry import register_external_mcp, shutdown_mcp
-from ai_observability_bot.state.store import get_store
+from srebot.bot.base import BotIntegration
+from srebot.bot.telegram.handlers import channel_post_handler
+from srebot.config import Settings, get_mcp_registry
+from srebot.mcp.registry import register_external_mcp, shutdown_mcp
+from srebot.state.store import get_store
 
 logger = logging.getLogger(__name__)
 

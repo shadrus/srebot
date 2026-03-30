@@ -9,7 +9,7 @@ import logging
 
 from aiohttp import web
 
-from ai_observability_bot.state.store import get_store
+from srebot.state.store import get_store
 
 logger = logging.getLogger(__name__)
 

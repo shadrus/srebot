@@ -6,8 +6,8 @@ Importing this package automatically registers all built-in integrations
 to get the single active integration at runtime.
 """
 
-from ai_observability_bot.bot import registry
-from ai_observability_bot.bot.telegram import TelegramBotIntegration
+from srebot.bot import registry
+from srebot.bot.telegram import TelegramBotIntegration
 
 # Register built-in integrations.
 # Third-party integrations (Slack, Discord, …) can call registry.register()

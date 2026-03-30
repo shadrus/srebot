@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "ai-observability-bot"
+name = "srebot"
 version = "0.1.0"
 description = "Telegram bot that analyzes Prometheus alerts using LLM and MCP tools"
 requires-python = ">=3.12"  # Tested on Python 3.14.3
@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/ai_observability_bot"]
+packages = ["src/srebot"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

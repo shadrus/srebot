@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from ai_observability_bot.mcp.mcp_client import ExternalMCPClient
+from srebot.mcp.mcp_client import ExternalMCPClient
 
 
 @pytest.mark.asyncio

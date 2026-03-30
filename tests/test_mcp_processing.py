@@ -1,6 +1,6 @@
 import json
 
-from ai_observability_bot.mcp.registry import _process_tool_result
+from srebot.mcp.registry import _process_tool_result
 
 
 def test_process_tool_result_json_list_deduplication():

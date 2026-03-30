@@ -9,11 +9,11 @@ from telegram import Message, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from ai_observability_bot.config import get_settings
-from ai_observability_bot.llm.agent import get_agent
-from ai_observability_bot.parser.alert_parser import Alert, AlertStatus, parse_alert_message
-from ai_observability_bot.parser.filtering import get_ignore_registry
-from ai_observability_bot.state.store import get_store
+from srebot.config import get_settings
+from srebot.llm.agent import get_agent
+from srebot.parser.alert_parser import Alert, AlertStatus, parse_alert_message
+from srebot.parser.filtering import get_ignore_registry
+from srebot.state.store import get_store
 
 logger = logging.getLogger(__name__)
 

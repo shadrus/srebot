@@ -68,7 +68,7 @@ async def query_prometheus(cluster: str, expr: str) -> dict:
 ## Project Structure
 
 ```
-src/ai_observability_bot/
+src/srebot/
 ├── config.py          # Settings (pydantic-settings) + ClusterRegistry
 ├── parser/            # Telegram message → Alert objects
 ├── state/             # Redis dedup store

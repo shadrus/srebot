@@ -29,8 +29,8 @@ jobs:
         run: |
           # v1.0.0 -> 1.0.0
           VERSION=${GITHUB_REF_NAME#v}
-          sed -i "s/^version: .*/version: $VERSION/" deploy/helm/ai-observability-bot/Chart.yaml
-          sed -i "s/^appVersion: .*/appVersion: \"$VERSION\"/" deploy/helm/ai-observability-bot/Chart.yaml
+          sed -i "s/^version: .*/version: $VERSION/" deploy/helm/srebot/Chart.yaml
+          sed -i "s/^appVersion: .*/appVersion: \"$VERSION\"/" deploy/helm/srebot/Chart.yaml
 
       - name: Run chart-releaser
         uses: helm/chart-releaser-action@v1.6.0

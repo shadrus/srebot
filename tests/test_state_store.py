@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from ai_observability_bot.state.store import AlertStore
+from srebot.state.store import AlertStore
 
 
 @pytest.fixture

@@ -49,7 +49,7 @@ async def register_external_mcp(
     read_only: bool = False,
 ):
     """Connect to an external MCP server and register its tools with a prefix."""
-    from ai_observability_bot.mcp.mcp_client import ExternalMCPClient
+    from srebot.mcp.mcp_client import ExternalMCPClient
 
     client = ExternalMCPClient(command, args, env)
     try:

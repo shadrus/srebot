@@ -1,12 +1,12 @@
 apiVersion: v2
-name: ai-observability-bot
+name: srebot
 description: AI-powered incident analyzer for Prometheus/Alertmanager in Telegram.
 type: application
 version: 0.1.0
 appVersion: "1.0.0"
 home: https://srebot.site360.tech
 sources:
-  - https://github.com/shadrus/ai-observability-bot
+  - https://github.com/shadrus/srebot
 icon: https://srebot.site360.tech/docs/logo.svg
 keywords:
   - sre

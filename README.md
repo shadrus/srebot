@@ -1,4 +1,4 @@
-# SREBot Agent 🤖
+# SreBot 🤖
 
 The **SREBot Agent** is a lightweight bridge that connects your private infrastructure (Prometheus, Loki, Elasticsearch) to the [SREBot AI Control Plane](https://srebot.site360.tech).
 
@@ -34,8 +34,8 @@ Alertmanager ──Telegram notification──► Channel
 ### 2. Deployment (Docker Compose)
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/shadrus/ai-observability-bot.git
-   cd ai-observability-bot
+   git clone https://github.com/shadrus/srebot.git
+   cd srebot
    ```
 2. **Configure environment:**
    ```bash

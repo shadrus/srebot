@@ -2,10 +2,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from ai_observability_bot.config import MCPServerConfig, MCPServerRegistry
-from ai_observability_bot.llm.agent import AlertAnalysisAgent
-from ai_observability_bot.parser.alert_parser import Alert
-from ai_observability_bot.parser.filtering import FilterCondition
+from srebot.config import MCPServerConfig, MCPServerRegistry
+from srebot.llm.agent import AlertAnalysisAgent
+from srebot.parser.alert_parser import Alert
+from srebot.parser.filtering import FilterCondition
 
 
 @pytest.mark.asyncio
@@ -14,10 +14,10 @@ async def test_agent_server_routing(mocker):
         "prod_server": MCPServerConfig(name="prod_server", command="dummy", condition=FilterCondition(labels={"cluster": "prod"}))
     }
     registry = MCPServerRegistry(configs)
-    mocker.patch("ai_observability_bot.llm.agent.get_mcp_registry", return_value=registry)
-    mocker.patch("ai_observability_bot.llm.agent.get_tools_schema", return_value=["mocked_schema"])
+    mocker.patch("srebot.llm.agent.get_mcp_registry", return_value=registry)
+    mocker.patch("srebot.llm.agent.get_tools_schema", return_value=["mocked_schema"])
     
-    mock_ws = mocker.patch("ai_observability_bot.llm.agent.SaaSWSClient")
+    mock_ws = mocker.patch("srebot.llm.agent.SaaSWSClient")
     mock_ws.return_value.analyze_alert = AsyncMock(return_value="Done")
     
     agent = AlertAnalysisAgent()

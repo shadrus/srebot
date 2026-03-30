@@ -51,4 +51,4 @@ RUN useradd -m botuser && chown -R botuser:botuser /app
 USER botuser
 
 # Explicitly use the python executable from the copied virtual environment
-CMD ["/app/.venv/bin/python", "-m", "ai_observability_bot.bot.main"]
+CMD ["/app/.venv/bin/python", "-m", "srebot.bot.main"]

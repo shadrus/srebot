@@ -5,11 +5,11 @@ import logging
 import sys
 
 # Importing the bot package triggers registration of all built-in integrations.
-import ai_observability_bot.bot  # noqa: F401
-from ai_observability_bot.bot.health import start_health_server
-from ai_observability_bot.bot.registry import create_bot
-from ai_observability_bot.config import get_settings
-from ai_observability_bot.state.store import get_store
+import srebot.bot  # noqa: F401
+from srebot.bot.health import start_health_server
+from srebot.bot.registry import create_bot
+from srebot.config import get_settings
+from srebot.state.store import get_store
 
 
 def _setup_logging(level: str) -> None:

@@ -3,7 +3,7 @@
 import logging
 from abc import ABC, abstractmethod
 
-from ai_observability_bot.config import Settings
+from srebot.config import Settings
 
 logger = logging.getLogger(__name__)
 

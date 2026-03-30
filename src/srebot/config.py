@@ -8,7 +8,7 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
-from ai_observability_bot.parser.filtering import FilterCondition, IgnoreRule
+from srebot.parser.filtering import FilterCondition, IgnoreRule
 
 logger = logging.getLogger(__name__)
 

@@ -1,7 +1,7 @@
 import pytest
 
-from ai_observability_bot.parser.alert_parser import Alert, AlertStatus
-from ai_observability_bot.parser.filtering import FilterCondition, IgnoreRegistry, IgnoreRule
+from srebot.parser.alert_parser import Alert, AlertStatus
+from srebot.parser.filtering import FilterCondition, IgnoreRegistry, IgnoreRule
 
 
 @pytest.fixture
@@ -82,8 +82,8 @@ def test_ignore_registry_logic(sample_alert):
     registry = IgnoreRegistry(rules=[rule1])
     assert registry.should_ignore(sample_alert) is False
 def test_not_labels_condition():
-    from ai_observability_bot.parser.alert_parser import Alert
-    from ai_observability_bot.parser.filtering import FilterCondition
+    from srebot.parser.alert_parser import Alert
+    from srebot.parser.filtering import FilterCondition
 
     alert_prod = Alert(
         status="firing",

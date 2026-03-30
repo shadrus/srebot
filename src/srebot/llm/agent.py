@@ -2,10 +2,10 @@
 
 import logging
 
-from ai_observability_bot.config import get_mcp_registry, get_settings
-from ai_observability_bot.llm.ws_client import SaaSWSClient
-from ai_observability_bot.mcp.registry import call_tool, get_tools_schema
-from ai_observability_bot.parser.alert_parser import Alert
+from srebot.config import get_mcp_registry, get_settings
+from srebot.llm.ws_client import SaaSWSClient
+from srebot.mcp.registry import call_tool, get_tools_schema
+from srebot.parser.alert_parser import Alert
 
 logger = logging.getLogger(__name__)
 

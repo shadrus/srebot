@@ -2,9 +2,9 @@
 
 import pytest
 
-from ai_observability_bot.bot.base import BotIntegration
-from ai_observability_bot.bot.registry import create_bot, register
-from ai_observability_bot.config import Settings
+from srebot.bot.base import BotIntegration
+from srebot.bot.registry import create_bot, register
+from srebot.config import Settings
 
 # ---------------------------------------------------------------------------
 # Minimal stub integration for testing
@@ -53,8 +53,8 @@ def _make_settings(**kwargs) -> Settings:
 def test_telegram_configured_returns_telegram_integration():
     """When telegram_bot_token is set, create_bot returns TelegramBotIntegration."""
     # Import here to trigger registration of the built-in telegram integration.
-    import ai_observability_bot.bot  # noqa: F401
-    from ai_observability_bot.bot.telegram import TelegramBotIntegration
+    import srebot.bot  # noqa: F401
+    from srebot.bot.telegram import TelegramBotIntegration
 
     settings = _make_settings(telegram_bot_token="fake-token", telegram_channel_id=-123)
     bot = create_bot(settings)
@@ -64,7 +64,7 @@ def test_telegram_configured_returns_telegram_integration():
 def test_no_integration_configured_raises():
     """When no integration has credentials, create_bot raises RuntimeError."""
 
-    import ai_observability_bot.bot.registry as reg_module
+    import srebot.bot.registry as reg_module
 
     # Temporarily replace the registry with a clean one that has only
     # a single unconfigured stub.
@@ -83,7 +83,7 @@ def test_no_integration_configured_raises():
 
 def test_multiple_integrations_configured_raises():
     """When more than one integration has credentials, create_bot raises RuntimeError."""
-    import ai_observability_bot.bot.registry as reg_module
+    import srebot.bot.registry as reg_module
 
     original_registry = reg_module._registry.copy()
     reg_module._registry.clear()
@@ -101,7 +101,7 @@ def test_multiple_integrations_configured_raises():
 
 def test_register_duplicate_raises():
     """Registering the same integration name twice raises ValueError."""
-    import ai_observability_bot.bot.registry as reg_module
+    import srebot.bot.registry as reg_module
 
     original_registry = reg_module._registry.copy()
     reg_module._registry.clear()

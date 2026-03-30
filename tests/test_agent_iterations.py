@@ -2,15 +2,15 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from ai_observability_bot.llm.agent import AlertAnalysisAgent
-from ai_observability_bot.parser.alert_parser import Alert
+from srebot.llm.agent import AlertAnalysisAgent
+from srebot.parser.alert_parser import Alert
 
 
 @pytest.mark.asyncio
 async def test_agent_calls_ws_client(mocker):
-    mocker.patch("ai_observability_bot.llm.agent.get_settings")
-    mocker.patch("ai_observability_bot.llm.agent.get_mcp_registry")
-    mock_ws = mocker.patch("ai_observability_bot.llm.agent.SaaSWSClient")
+    mocker.patch("srebot.llm.agent.get_settings")
+    mocker.patch("srebot.llm.agent.get_mcp_registry")
+    mock_ws = mocker.patch("srebot.llm.agent.SaaSWSClient")
     mock_instance = mock_ws.return_value
     mock_instance.analyze_alert = AsyncMock(return_value="Mocked SaaS response.")
     

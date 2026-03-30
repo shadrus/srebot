@@ -14,8 +14,8 @@ Rules enforced at startup:
 import logging
 from collections.abc import Callable
 
-from ai_observability_bot.bot.base import BotIntegration
-from ai_observability_bot.config import Settings
+from srebot.bot.base import BotIntegration
+from srebot.config import Settings
 
 logger = logging.getLogger(__name__)
 
