@@ -4,7 +4,7 @@
 replicaCount: 1
 
 image:
-  repository: ai-observability-bot
+  repository: ghcr.io/shadrus/ai-observability-bot
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
   tag: ""

@@ -1,6 +1,22 @@
 apiVersion: v2
 name: ai-observability-bot
-description: A Helm chart for AI Observability Bot
+description: AI-powered incident analyzer for Prometheus/Alertmanager in Telegram.
 type: application
 version: 0.1.0
-appVersion: "0.1.0"
+appVersion: "1.0.0"
+home: https://srebot.site360.tech
+sources:
+  - https://github.com/shadrus/ai-observability-bot
+icon: https://srebot.site360.tech/docs/logo.svg
+keywords:
+  - sre
+  - ai
+  - monitoring
+  - alertmanager
+  - telegram
+annotations:
+  artifacthub.io/license: MIT
+  artifacthub.io/links: |
+    - name: Documentation
+      url: https://srebot.site360.tech/docs
+
