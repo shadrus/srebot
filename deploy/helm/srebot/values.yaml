@@ -1,4 +1,4 @@
-# Default values for ai-observability-bot.
+# Default values for srebot.
 # This is a YAML-file that represents the configuration of your application.
 
 replicaCount: 1
@@ -39,7 +39,7 @@ securityContext:
 # Bot Configuration (config.yml)
 # ------------------------------------------------------------------------------
 config:
-  saas_ws_url: "ws://srebot-backend.monitoring.svc.cluster.local:8000/api/v1/agent/connect"
+  saas_ws_url: "wss://api.srebot.site360.tech/api/v1/agent/connect"
   llm_response_language: "English"
   llm_max_iterations: 10
   
