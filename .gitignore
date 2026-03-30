@@ -19,7 +19,7 @@ env/
 .env/
 
 # uv
-uv.lock
+# uv.lock is NOT ignored for apps to ensure reproducible builds
 
 # Environment variables
 .env
