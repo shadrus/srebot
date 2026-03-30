@@ -24,23 +24,20 @@ dry_run: false
 mcp_servers:
   # ─────────────────────────────────────────────────────────────────────────────
   # Prometheus MCP Server
-  # https://github.com/pab1it0/prometheus-mcp-server
   # ─────────────────────────────────────────────────────────────────────────────
-  yandex-production-prometheus:
+  prod-cluster-prometheus:
     command: "uvx"
     args:
       - "prometheus-mcp-server"
     env:
-      PROMETHEUS_URL: "http://prometheus-prod.example.com:9090"
+      PROMETHEUS_URL: "http://prometheus-service.monitoring.svc:9090"
       # PROMETHEUS_USERNAME: "admin"
       # PROMETHEUS_PASSWORD: "secret"
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Elasticsearch MCP Server (official, by Elastic)
-  # https://github.com/elastic/mcp-server-elasticsearch
-  # Install: npm install -g @elastic/mcp-server-elasticsearch
+  # Elasticsearch MCP Server
   # ─────────────────────────────────────────────────────────────────────────────
-  yandex-production-elasticsearch:
+  prod-cluster-elasticsearch:
     command: "npx"
     args:
       - "-y"
@@ -53,7 +50,7 @@ mcp_servers:
     # Recommended when ES has no auth.
     read_only: true
     env:
-      ES_URL: "https://elasticsearch-prod.example.com:9200"
+      ES_URL: "https://elasticsearch-logging.svc:9200"
       # ES_API_KEY: "your-api-key-here"
       # ES_USERNAME: "elastic"
       # ES_PASSWORD: "changeme"

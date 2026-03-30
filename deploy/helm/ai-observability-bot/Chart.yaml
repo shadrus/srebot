@@ -15,7 +15,7 @@ keywords:
   - alertmanager
   - telegram
 annotations:
-  artifacthub.io/license: MIT
+  artifacthub.io/license: PolyForm-Noncommercial-1.0.0
   artifacthub.io/links: |
     - name: Documentation
       url: https://srebot.site360.tech/docs
