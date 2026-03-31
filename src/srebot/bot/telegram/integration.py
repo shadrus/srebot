@@ -79,9 +79,7 @@ class TelegramBotIntegration(BotIntegration):
         self._app.run_polling(
             drop_pending_updates=True,
             bootstrap_retries=-1,  # Keep trying on startup
-            read_timeout=30,
-            connect_timeout=20,
-            timeout=20,  # Long polling timeout (must be < read_timeout)
+            timeout=20,  # Long polling timeout (must be < read_timeout passed to HTTPXRequest)
         )
 
     def stop(self) -> None:
