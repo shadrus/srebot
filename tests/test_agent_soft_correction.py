@@ -14,6 +14,16 @@ async def test_agent_soft_correction_delegated(mocker):
     mock_ws.return_value.analyze_alert = AsyncMock(return_value="Done")
     agent = AlertAnalysisAgent()
     agent._token = "valid"
-    alert = Alert(status="firing", alertname="Test", cluster="prod", labels={}, annotations={}, fingerprint="1", namespace="default", severity="critical", source_url="")
+    alert = Alert(
+        status="firing",
+        alertname="Test",
+        cluster="prod",
+        labels={},
+        annotations={},
+        fingerprint="1",
+        namespace="default",
+        severity="critical",
+        source_url="",
+    )
     await agent.analyze([alert])
     mock_ws.return_value.analyze_alert.assert_called_once()

@@ -28,7 +28,7 @@ class AlertAnalysisAgent:
             return "⚠️ Cannot analyze: SAAS_AGENT_TOKEN is not configured."
 
         primary = alerts[0]
-        
+
         # Serialize alerts to dict for JSON transport
         alert_data = [
             {
@@ -55,18 +55,60 @@ class AlertAnalysisAgent:
                 logger.debug(
                     "Server %r blocked for group %s by condition", server.name, primary.alertname
                 )
-        
+
         # Get schema containing only tools from allowed servers
         tools_schema = get_tools_schema(allowed_servers=allowed_servers)
 
         client = SaaSWSClient(ws_url=self._ws_url, token=self._token)
-        
+
         # Run the WebSocket loop
         return await client.analyze_alert(
             alert_data={"alerts": alert_data},
             tools_schema=tools_schema,
             tool_executor=call_tool,
         )
+
+    async def parse_raw_text(self, text: str) -> list[Alert]:
+        """
+        Identify and extract Alert objects from unstructured text via SaaS LLM.
+        """
+        if not self._token:
+            logger.warning("Cannot smart-parse: SAAS_AGENT_TOKEN is not configured.")
+            return []
+
+        client = SaaSWSClient(ws_url=self._ws_url, token=self._token)
+        raw_alerts = await client.extract_alerts(text)
+
+        alerts: list[Alert] = []
+        for a in raw_alerts:
+            try:
+                # Ensure all required fields are present; others get defaults
+                alerts.append(
+                    Alert(
+                        status=a.get("status", "firing"),
+                        alertname=a.get("alertname", "unknown"),
+                        cluster=a.get("cluster", "unknown"),
+                        namespace=a.get("namespace", ""),
+                        severity=a.get("severity", ""),
+                        labels=a.get("labels", {}),
+                        annotations=a.get("annotations", {}),
+                        fingerprint=a.get("fingerprint", ""),
+                        source_url=a.get("source_url"),
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Failed to construct Alert from SaaS data: %s | data=%s", exc, a)
+
+        return alerts
+
+    async def refresh_strategies(self) -> None:
+        """Fetch latest dynamic parsing strategies from the SaaS backend."""
+        if not self._token:
+            logger.debug("Skipping strategy refresh: SAAS_AGENT_TOKEN not set.")
+            return
+            
+        client = SaaSWSClient(ws_url=self._ws_url, token=self._token)
+        await client.refresh_strategies()
 
 
 # Module-level singleton

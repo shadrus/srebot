@@ -81,6 +81,8 @@ def test_ignore_registry_logic(sample_alert):
 
     registry = IgnoreRegistry(rules=[rule1])
     assert registry.should_ignore(sample_alert) is False
+
+
 def test_not_labels_condition():
     from srebot.parser.alert_parser import Alert
     from srebot.parser.filtering import FilterCondition
@@ -127,7 +129,10 @@ def test_not_labels_condition():
 
     # Condition: ignore if cluster is NOT "prod" (meaning we WANT prod)
     cond = FilterCondition(not_labels={"cluster": "prod"})
-    
-    assert cond.matches(alert_dev) is True # "dev" is not "prod", so condition matches (ignore)
-    assert cond.matches(alert_no_cluster) is True # None is not "prod", so condition matches (ignore)
-    assert cond.matches(alert_prod) is False # "prod" IS "prod", so condition does NOT match (don't ignore)
+
+    # "dev" is not "prod", so condition matches (ignore)
+    assert cond.matches(alert_dev) is True
+    # None is not "prod", so condition matches (ignore)
+    assert cond.matches(alert_no_cluster) is True
+    # "prod" IS "prod", so condition does NOT match (don't ignore)
+    assert cond.matches(alert_prod) is False

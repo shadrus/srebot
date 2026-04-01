@@ -1,7 +1,5 @@
 """Tests for Redis alert store (deduplication logic)."""
 
-from __future__ import annotations
-
 from unittest.mock import AsyncMock
 
 import pytest

@@ -8,9 +8,8 @@ from telegram.request import HTTPXRequest
 
 from srebot.bot.base import BotIntegration
 from srebot.bot.telegram.handlers import channel_post_handler
-from srebot.config import Settings, get_mcp_registry
-from srebot.mcp.registry import register_external_mcp, shutdown_mcp
-from srebot.state.store import get_store
+from srebot.config import Settings
+from srebot.llm.agent import get_agent
 
 logger = logging.getLogger(__name__)
 
@@ -93,32 +92,15 @@ class TelegramBotIntegration(BotIntegration):
 
     async def _post_init(self, application) -> None:
         """Connect to external MCP servers and register error handler."""
+        # Fetch latest parsing strategies upon startup
+        await get_agent().refresh_strategies()
+
         application.add_error_handler(self._error_handler)
-
-        registry = get_mcp_registry()
-        configs = registry.all_configs()
-        if not configs:
-            logger.warning("No MCP servers configured! Check mcp_servers.yml")
-            return
-
-        for cfg in configs:
-            logger.info("Registering MCP server: %s", cfg.name)
-            try:
-                await register_external_mcp(
-                    name=cfg.name,
-                    command=cfg.command,
-                    args=cfg.args,
-                    env=cfg.env,
-                    read_only=cfg.read_only,
-                )
-            except Exception as e:
-                logger.error("Failed to register MCP server %s: %s", cfg.name, e)
+        await self._register_mcp_servers()
 
     async def _post_shutdown(self, application) -> None:
         """Cleanup on shutdown."""
-        await shutdown_mcp()
-        store = await get_store()
-        await store.close()
+        await self._shutdown_resources()
 
     @staticmethod
     async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:

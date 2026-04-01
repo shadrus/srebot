@@ -7,9 +7,9 @@ to get the single active integration at runtime.
 """
 
 from srebot.bot import registry
+from srebot.bot.slack import SlackBotIntegration
 from srebot.bot.telegram import TelegramBotIntegration
 
 # Register built-in integrations.
-# Third-party integrations (Slack, Discord, …) can call registry.register()
-# from their own package __init__ before main() is invoked.
 registry.register("telegram", TelegramBotIntegration)
+registry.register("slack", SlackBotIntegration)

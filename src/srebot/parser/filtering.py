@@ -20,8 +20,8 @@ class FilterCondition(BaseModel):
 
     labels: dict[str, str] = Field(default_factory=dict)
     not_labels: dict[str, str] = Field(default_factory=dict)
-    any: list["FilterCondition"] = Field(default_factory=list)
-    all: list["FilterCondition"] = Field(default_factory=list)
+    any: list[FilterCondition] = Field(default_factory=list)
+    all: list[FilterCondition] = Field(default_factory=list)
 
     def matches(self, alert: Alert) -> bool:
         # Check direct labels (AND logic)

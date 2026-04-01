@@ -3,7 +3,9 @@
 import logging
 from abc import ABC, abstractmethod
 
-from srebot.config import Settings
+from srebot.config import Settings, get_mcp_registry
+from srebot.mcp.registry import register_external_mcp, shutdown_mcp
+from srebot.state.store import get_store
 
 logger = logging.getLogger(__name__)
 
@@ -53,3 +55,34 @@ class BotIntegration(ABC):
         Called when the process receives a shutdown signal. Implementations
         should release all resources (connections, tasks, etc.).
         """
+
+    # ------------------------------------------------------------------
+    # Shared lifecycle hooks
+    # ------------------------------------------------------------------
+
+    async def _register_mcp_servers(self) -> None:
+        """Connect to all configured external MCP servers."""
+        registry = get_mcp_registry()
+        configs = registry.all_configs()
+        if not configs:
+            logger.warning("No MCP servers configured! Check mcp_servers.yml")
+            return
+
+        for cfg in configs:
+            logger.info("Registering MCP server: %s", cfg.name)
+            try:
+                await register_external_mcp(
+                    name=cfg.name,
+                    command=cfg.command,
+                    args=cfg.args,
+                    env=cfg.env,
+                    read_only=cfg.read_only,
+                )
+            except Exception as e:
+                logger.error("Failed to register MCP server %s: %s", cfg.name, e)
+
+    async def _shutdown_resources(self) -> None:
+        """Shutdown MCP connections and Redis on teardown."""
+        await shutdown_mcp()
+        store = await get_store()
+        await store.close()

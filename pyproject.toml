@@ -6,16 +6,17 @@ build-backend = "hatchling.build"
 name = "srebot"
 version = "0.1.0"
 description = "Telegram bot that analyzes Prometheus alerts using LLM and MCP tools"
-requires-python = ">=3.12"  # Tested on Python 3.14.3
+requires-python = ">=3.14"  # Proactively migration to 3.14
 dependencies = [
-    "python-telegram-bot[ext]>=21.0",
-    "httpx>=0.27",
-    "pydantic-settings[yaml]>=2.0",
-    "pyyaml>=6.0",
-    "redis[hiredis]>=5.0",
-    "mcp>=1.0.0",
-    "aiohttp>=3.13.3",
+    "python-telegram-bot[ext]>=22.7",
+    "httpx>=0.28.1",
+    "pydantic-settings[yaml]>=2.13.1",
+    "pyyaml>=6.0.3",
+    "redis[hiredis]>=7.4.0",
+    "mcp>=1.26.0",
+    "aiohttp>=3.13.5",
     "websockets>=16.0",
+    "slack-bolt>=1.27.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -27,7 +28,7 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]

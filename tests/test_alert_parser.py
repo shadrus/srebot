@@ -1,7 +1,5 @@
 """Tests for alert_parser."""
 
-from __future__ import annotations
-
 from pathlib import Path
 
 from srebot.parser.alert_parser import AlertStatus, parse_alert_message

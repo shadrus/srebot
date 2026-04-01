@@ -24,7 +24,7 @@ class AlertStore:
         self._ttl = ttl
 
     @classmethod
-    async def create(cls) -> "AlertStore":
+    async def create(cls) -> AlertStore:
         settings = get_settings()
         client = aioredis.from_url(settings.redis_url, decode_responses=True)
         return cls(client, settings.alert_fingerprint_ttl)
@@ -40,21 +40,21 @@ class AlertStore:
         data = json.loads(value)
         return data.get("status") != "firing"
 
-    async def mark_firing(self, fingerprint: str, reply_message_id: int) -> None:
+    async def mark_firing(self, fingerprint: str, reply_message_id: int | str) -> None:
         """Mark fingerprint as firing, storing the reply message ID."""
         await self._redis.set(
             self._key(fingerprint),
             json.dumps({"status": "firing", "reply_message_id": reply_message_id}),
             ex=self._ttl,
         )
-        logger.debug("Marked firing: %s (reply_msg=%d)", fingerprint, reply_message_id)
+        logger.debug("Marked firing: %s (reply_msg=%s)", fingerprint, reply_message_id)
 
     async def mark_resolved(self, fingerprint: str) -> None:
         """Remove fingerprint from store — next firing triggers fresh analysis."""
         await self._redis.delete(self._key(fingerprint))
         logger.debug("Marked resolved (deleted): %s", fingerprint)
 
-    async def get_reply_message_id(self, fingerprint: str) -> int | None:
+    async def get_reply_message_id(self, fingerprint: str) -> int | str | None:
         """Return the reply message ID for an existing firing alert, or None."""
         value = await self._redis.get(self._key(fingerprint))
         if value is None:

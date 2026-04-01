@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_channel_id: int = 0
 
+    # Slack
+    slack_bot_token: str = ""
+    slack_app_token: str = ""
+    slack_channel_id: str = ""
+
     # SaaS Control Plane
     saas_ws_url: str = "wss://api.srebot.site360.tech/api/v1/agent/connect"
     saas_agent_token: str = ""
@@ -95,7 +100,7 @@ class MCPServerRegistry:
         self._servers = servers
 
     @classmethod
-    def from_settings(cls, settings: Settings) -> "MCPServerRegistry":
+    def from_settings(cls, settings: Settings) -> MCPServerRegistry:
         servers = {}
         for name, cfg in settings.mcp_servers.items():
             if not cfg.name:

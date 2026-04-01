@@ -30,7 +30,7 @@ uv run ruff format src/ tests/
 
 Configuration lives in `pyproject.toml` (`[tool.ruff]`):
 - Line length: **100**
-- Target: **Python 3.12+**
+- Target: **Python 3.14+**
 - Active rule sets: `E`, `F`, `I` (isort), `UP` (pyupgrade)
 
 ### Key Rules

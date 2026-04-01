@@ -184,7 +184,7 @@ def _deduplicate_json(data: Any) -> Any:
     if isinstance(data, list):
         if not data:
             return data
-        
+
         # Count occurrences of unique items (serialized for hashing)
         counts = {}
         order = []
@@ -197,13 +197,13 @@ def _deduplicate_json(data: Any) -> Any:
                 order.append(key)
             else:
                 counts[key]["count"] += 1
-        
+
         result = []
         for key in order:
             entry = counts[key]
             item = entry["item"]
             count = entry["count"]
-            
+
             if count > 1:
                 # If it's a dict, add the count inside it
                 if isinstance(item, dict):
