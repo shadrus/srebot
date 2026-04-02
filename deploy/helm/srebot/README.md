@@ -46,20 +46,51 @@ secrets:
   saas_agent_token: "saas:token"
 ```
 
-### 3. Configuring MCP Servers (e.g. Prometheus)
+### 3. Configuring MCP Servers (Sidecars)
 
-You can configure external Model Context Protocol (MCP) servers so SREBot can fetch live metrics during an incident. For example, connecting to Prometheus:
+As of version 0.1.0, SREBot connects to MCP servers via network (SSE/HTTP). The most reliable way in Kubernetes is to run them as **sidecar containers** within the same Pod.
 
+> [!WARNING]
+> **Root Level Only:** The `sidecars` section must be at the **root** of your `values.yaml` (next to `config:`). **DO NOT** nest it inside the `config:` section.
+> **Kubernetes Syntax:** Kubernetes uses a **list** for environment variables (`- name: ... / value: ...`). Do not use the dictionary syntax from Docker Compose.
+
+#### Step A: Define the sidecar in `values.yaml`
+```yaml
+# Correct structure
+config:
+  agentToken: "..."
+
+# sidecars is NOT inside config
+sidecars:
+  prometheus-mcp:
+    image: ghcr.io/pab1it0/prometheus-mcp-server:latest
+    env:
+      - name: PROMETHEUS_URL
+        value: "http://prometheus-operated.monitoring.svc:9090"
+      - name: PROMETHEUS_MCP_SERVER_TRANSPORT
+        value: "sse"
+    ports:
+      - containerPort: 8080
+
+  elasticsearch-mcp:
+    image: docker.elastic.co/mcp/elasticsearch:latest
+    # In Kubernetes, use 'args' to append to the image's ENTRYPOINT
+    args: ["http", "--address", "0.0.0.0:18001"]
+    env:
+      - name: ES_URL
+        value: "http://elasticsearch-master:9200"
+    ports:
+      - containerPort: 18001
+```
+
+#### Step B: Point SREBot to the sidecar
+All containers in a Pod share the same network namespace, so use `localhost`:
 ```yaml
 config:
   mcp_servers:
     prometheus:
-      command: "uvx"
-      args:
-        - "prometheus-mcp-server"
-      env:
-        # Update this URL to point to your internal Prometheus service
-        PROMETHEUS_URL: "http://prometheus-operated.monitoring.svc:9090"
+      url: "http://localhost:8080/sse"
+      transport: "sse"
 ```
 
 ### 4. Ignoring Specific Alerts
