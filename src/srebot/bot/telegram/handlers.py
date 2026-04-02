@@ -46,11 +46,14 @@ async def _handle_alert_group(
 
     # --- RESOLVED ---
     if primary.status == AlertStatus.RESOLVED:
-        already_tracked = await store.get_reply_message_id(group_fp)
-        await store.mark_resolved(group_fp)
-        logger.info("Resolved group [%s]: %s", group_fp, label)
+        current_status = await store.get_status(group_fp)
+        reply_to_id = await store.get_reply_message_id(group_fp)
 
-        if already_tracked:
+        await store.mark_resolved(group_fp)
+        logger.info("Resolved group [%s]: %s (was %s)", group_fp, label, current_status)
+
+        # Notify if we were tracking this alert (firing or analyzing)
+        if current_status in ("firing", "analyzing") or reply_to_id:
             try:
                 await _reply(
                     source_msg,
@@ -81,6 +84,8 @@ async def _handle_alert_group(
                 parse_mode=ParseMode.HTML,
                 reply_to_message_id=source_msg.message_id,
             )
+            # Mark as ANALYZING so concurrent RESOLVED messages know we are on it
+            await store.mark_analyzing(group_fp, placeholder.message_id)
         except Exception as exc:
             logger.error("Failed to send placeholder reply: %s", exc)
             return
@@ -90,6 +95,7 @@ async def _handle_alert_group(
             group_fp,
             len(alerts),
         )
+        await store.mark_analyzing(group_fp, 0)
 
     # Run LLM analysis
     try:
@@ -98,12 +104,16 @@ async def _handle_alert_group(
         logger.exception("LLM analysis failed for group %s", group_fp)
         analysis = f"⚠️ <b>Analysis failed:</b> <code>{exc}</code>\nPlease investigate manually."
 
+    # Check if the alert was resolved while we were analyzing
+    current_status = await store.get_status(group_fp)
+
     if dry_run:
         logger.info("[DRY-RUN] Analysis result for group %s:\n%s", group_fp, analysis)
-        await store.mark_firing(group_fp, reply_message_id=0)
+        if current_status == "analyzing":
+            await store.mark_firing(group_fp, reply_message_id=0)
         return
 
-    # Edit placeholder with full analysis
+    # ALWAYS update the UI with findings, even if already resolved
     try:
         await placeholder.edit_text(analysis, parse_mode=ParseMode.HTML)
     except Exception as exc:
@@ -118,7 +128,15 @@ async def _handle_alert_group(
             logger.error("Could not send analysis reply: %s", exc2)
             return
 
-    await store.mark_firing(group_fp, placeholder.message_id)
+    # Only restore FIRING state if it wasn't cleared by a RESOLVED message
+    if current_status == "analyzing":
+        await store.mark_firing(group_fp, placeholder.message_id)
+    else:
+        logger.info(
+            "Alert %s was %s during analysis. Not marking as firing.",
+            group_fp,
+            current_status,
+        )
 
 
 async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

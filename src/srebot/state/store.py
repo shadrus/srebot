@@ -15,7 +15,7 @@ class AlertStore:
     Persists alert state in Redis to deduplicate repeated firings.
 
     Key schema: ``alert:{fingerprint}``
-    Value: JSON ``{"status": "firing"|"resolved", "reply_message_id": int}``
+    Value: JSON ``{"status": "firing"|"resolved"|"analyzing", "reply_message_id": int}``
     TTL: configured via ``ALERT_FINGERPRINT_TTL`` (default 24 h).
     """
 
@@ -33,12 +33,23 @@ class AlertStore:
         return f"alert:{fingerprint}"
 
     async def is_new(self, fingerprint: str) -> bool:
-        """Return True if this fingerprint is NOT already tracked as firing."""
+        """Return True if this fingerprint is NOT already tracked as firing or analyzing."""
         value = await self._redis.get(self._key(fingerprint))
         if value is None:
             return True
         data = json.loads(value)
-        return data.get("status") != "firing"
+        return data.get("status") not in ("firing", "analyzing")
+
+    async def mark_analyzing(
+        self, fingerprint: str, reply_message_id: int | str | None = None
+    ) -> None:
+        """Mark fingerprint as under analysis."""
+        await self._redis.set(
+            self._key(fingerprint),
+            json.dumps({"status": "analyzing", "reply_message_id": reply_message_id}),
+            ex=self._ttl,
+        )
+        logger.debug("Marked analyzing: %s", fingerprint)
 
     async def mark_firing(self, fingerprint: str, reply_message_id: int | str) -> None:
         """Mark fingerprint as firing, storing the reply message ID."""
@@ -60,6 +71,16 @@ class AlertStore:
         if value is None:
             return None
         return json.loads(value).get("reply_message_id")
+
+    async def get_status(self, fingerprint: str) -> str | None:
+        """Return current status ('firing', 'analyzing') or None (if resolved/expired)."""
+        value = await self._redis.get(self._key(fingerprint))
+        if value is None:
+            return None
+        try:
+            return json.loads(value).get("status")
+        except (json.JSONDecodeError, TypeError):
+            return None
 
     async def ping(self) -> None:
         """Ping the underlying Redis to ensure connectivity."""

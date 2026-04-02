@@ -1,5 +1,5 @@
-import pytest
-from srebot.parser.alert_parser import parse_alert_message, AlertStatus, update_remote_strategies
+from srebot.parser.alert_parser import AlertStatus, parse_alert_message, update_remote_strategies
+
 
 def setup_module(module):
     """Seed the dynamis parser with same strategies used in prod for local tests."""
@@ -56,7 +56,8 @@ Source: http://alertmanager/details
 
 MARKDOWN_BOLD_ALERT = """
 *Alert:* Pod has been in a non-ready state for more than 15 minutes. - `warning`
-*Description:* Pod canton/validator-app-7d77cc9cb-w7wlc has been in a non-ready state for longer than 15 minutes on cluster management-cluster.
+*Description:* Pod canton/validator-app-7d77cc9cb-w7wlc has been in a non-ready state \
+for longer than 15 minutes on cluster management-cluster.
 *Details:*
  • *alertname:* `KubePodNotReady`
  • *alertgroup:* `kubernetes-apps`

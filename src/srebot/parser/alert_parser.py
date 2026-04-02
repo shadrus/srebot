@@ -1,7 +1,7 @@
 import hashlib
 import logging
 import re
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel
@@ -9,7 +9,7 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 
-class AlertStatus(str, Enum):
+class AlertStatus(StrEnum):
     FIRING = "firing"
     RESOLVED = "resolved"
 
@@ -28,6 +28,18 @@ class Alert(BaseModel):
     annotations: dict[str, str] = {}
     fingerprint: str = ""
     source_url: str | None = None
+
+    @property
+    def summary(self) -> str:
+        return self.annotations.get("summary", "")
+
+    @property
+    def description(self) -> str:
+        return self.annotations.get("description", "")
+
+    @property
+    def runbook_url(self) -> str | None:
+        return self.annotations.get("runbook_url")
 
 
 _SOURCE_RE = re.compile(r"Source:\s*(\S+)", re.IGNORECASE)
@@ -90,7 +102,11 @@ class DynamicStrategy:
         blocks = [p.strip() for p in parts if self.labels_header_re.search(p)]
 
         if not blocks:
-            logger.debug("Strategy %s: Status %s found, but no blocks matched labels header", self.name, status)
+            logger.debug(
+                "Strategy %s: Status %s found, but no blocks matched labels header",
+                self.name,
+                status,
+            )
             return []
 
         results: list[Alert] = []

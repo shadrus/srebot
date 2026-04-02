@@ -71,8 +71,10 @@ def mock_store():
     store = AsyncMock()
     store.is_new = AsyncMock(return_value=True)
     store.get_reply_message_id = AsyncMock(return_value=None)
+    store.get_status = AsyncMock(return_value=None)
     store.mark_firing = AsyncMock()
     store.mark_resolved = AsyncMock()
+    store.mark_analyzing = AsyncMock()
     return store
 
 
@@ -189,6 +191,7 @@ class TestHandleAlertGroupFiring:
                 "srebot.bot.telegram.handlers.get_settings", return_value=MagicMock(dry_run=False)
             ),  # noqa: E501
         ):
+            mock_store.get_status.return_value = "analyzing"
             await _handle_alert_group("fp123", [alert], mock_message)
 
         mock_store.mark_firing.assert_called_once_with("fp123", 77)
@@ -271,6 +274,7 @@ class TestHandleAlertGroupDryRun:
                 "srebot.bot.telegram.handlers.get_settings", return_value=MagicMock(dry_run=True)
             ),  # noqa: E501
         ):
+            mock_store.get_status.return_value = "analyzing"
             await _handle_alert_group("fp123", [alert], mock_message)
 
         mock_store.mark_firing.assert_called_once_with("fp123", reply_message_id=0)

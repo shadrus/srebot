@@ -85,11 +85,13 @@ async def _handle_alert_group(
 
     # --- RESOLVED ---
     if primary.status == AlertStatus.RESOLVED:
-        already_tracked = await store.get_reply_message_id(group_fp)
-        await store.mark_resolved(group_fp)
-        logger.info("Resolved group [%s]: %s", group_fp, label)
+        current_status = await store.get_status(group_fp)
+        reply_to_ts = await store.get_reply_message_id(group_fp)
 
-        if already_tracked:
+        await store.mark_resolved(group_fp)
+        logger.info("Resolved group [%s]: %s (was %s)", group_fp, label, current_status)
+
+        if current_status in ("firing", "analyzing") or reply_to_ts:
             text = (
                 f"✅ *Resolved:* `{primary.alertname}`\n"
                 f"*Cluster:* {primary.cluster} | "
@@ -99,11 +101,14 @@ async def _handle_alert_group(
                 logger.info("[DRY-RUN] Would send Slack message:\n%s", text)
             else:
                 try:
-                    await client.chat_postMessage(channel=channel_id, text=text)
+                    await client.chat_postMessage(
+                        channel=channel_id,
+                        text=text,
+                        thread_ts=reply_to_ts if reply_to_ts else None,
+                    )
                 except Exception as exc:
                     logger.warning("Could not send resolved reply: %s", exc)
         return
-
     # --- FIRING ---
     if not await store.is_new(group_fp):
         logger.info("Duplicate firing group (skip): %s [%s]", label, group_fp)
@@ -122,11 +127,14 @@ async def _handle_alert_group(
                 ),
             )
             placeholder_ts = res["ts"]
+            # Mark as ANALYZING so concurrent RESOLVED messages know we are on it
+            await store.mark_analyzing(group_fp, placeholder_ts)
         except Exception as exc:
             logger.error("Failed to send placeholder reply: %s", exc)
             return
     else:
         logger.info("[DRY-RUN] Analyzing group %s: %d alert(s)", group_fp, len(alerts))
+        await store.mark_analyzing(group_fp, "0")
 
     # Run LLM analysis
     try:
@@ -138,12 +146,16 @@ async def _handle_alert_group(
     # Convert HTML from agent to Slack mrkdwn
     analysis = _html_to_slack(analysis)
 
+    # Check if the alert was resolved while we were analyzing
+    current_status = await store.get_status(group_fp)
+
     if dry_run:
         logger.info("[DRY-RUN] Analysis result for group %s:\n%s", group_fp, analysis)
-        await store.mark_firing(group_fp, reply_message_id=0)
+        if current_status == "analyzing":
+            await store.mark_firing(group_fp, reply_message_id="0")
         return
 
-    # Edit placeholder with full analysis
+    # ALWAYS update the UI with findings, even if already resolved
     try:
         await client.chat_update(
             channel=channel_id,
@@ -159,8 +171,15 @@ async def _handle_alert_group(
             logger.error("Could not send analysis reply: %s", exc2)
             return
 
-    if placeholder_ts:
-        await store.mark_firing(group_fp, placeholder_ts)
+    # Only restore FIRING state if it wasn't cleared by a RESOLVED message
+    if current_status == "analyzing":
+        await store.mark_firing(group_fp, placeholder_ts)  # type: ignore[arg-type]
+    else:
+        logger.info(
+            "Alert %s was %s during analysis. Not marking as firing.",
+            group_fp,
+            current_status,
+        )
 
 
 def register_handlers(app: AsyncApp, settings: Settings) -> None:

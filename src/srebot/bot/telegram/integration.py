@@ -56,6 +56,7 @@ class TelegramBotIntegration(BotIntegration):
             ApplicationBuilder()
             .token(self._settings.telegram_bot_token)
             .request(request)
+            .concurrent_updates(True)
             .post_init(self._post_init)
             .post_shutdown(self._post_shutdown)
             .build()

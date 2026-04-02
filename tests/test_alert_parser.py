@@ -2,9 +2,30 @@
 
 from pathlib import Path
 
-from srebot.parser.alert_parser import AlertStatus, parse_alert_message
+from srebot.parser.alert_parser import (
+    AlertStatus,
+    parse_alert_message,
+    update_remote_strategies,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def setup_module(module):
+    """Seed the dynamic parser with same strategies used in prod for local tests."""
+    update_remote_strategies(
+        [
+            {
+                "name": "Standard",
+                "firing_pattern": r"(alerts?\s+firing|\[FIRING:.*\]|FIRING|🔥|\*Alert:\*)",
+                "resolved_pattern": r"(alerts?\s+resolved|\[RESOLVED:.*\]|RESOLVED|✅|\[RESOLVED\])",  # noqa: E501
+                "labels_header_pattern": r"^(Labels|Details):\s*$",
+                "annotations_header_pattern": r"^Annotations:\s*$",
+                "kv_pattern": r"^\s*[\-•]\s*(.+?)\s*[=:]\s*(.+)$",
+                "priority": 10,
+            },
+        ]
+    )
 
 
 def load_fixture(name: str) -> str:
