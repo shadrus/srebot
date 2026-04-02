@@ -17,9 +17,8 @@ class MCPServerConfig(BaseModel):
     """Configuration for an external MCP server."""
 
     name: str = ""  # auto-populated from key if omitted
-    command: str
-    args: list[str] = Field(default_factory=list)
-    env: dict[str, str] | None = None
+    url: str
+    transport: str = "sse"  # "sse" or "http" (Streamable HTTP)
     read_only: bool = False  # if True, only allow read-like tools
     condition: FilterCondition | None = None  # Optional rule to restrict server usage
 

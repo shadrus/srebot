@@ -73,9 +73,8 @@ class BotIntegration(ABC):
             try:
                 await register_external_mcp(
                     name=cfg.name,
-                    command=cfg.command,
-                    args=cfg.args,
-                    env=cfg.env,
+                    url=cfg.url,
+                    transport=cfg.transport,
                     read_only=cfg.read_only,
                 )
             except Exception as e:

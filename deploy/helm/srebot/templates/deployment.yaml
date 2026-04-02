@@ -72,6 +72,10 @@ spec:
               readOnly: true
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+        {{- range $name, $container := .Values.sidecars }}
+        - name: {{ $name }}
+          {{- toYaml $container | nindent 10 }}
+        {{- end }}
       volumes:
         - name: config-volume
           configMap:

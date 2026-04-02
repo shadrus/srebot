@@ -52,11 +52,7 @@ config:
   # MCP Servers registry
   mcp_servers:
     prometheus:
-      command: "uvx"
-      args:
-        - "prometheus-mcp-server"
-      env:
-        PROMETHEUS_URL: "http://prometheus-operated.monitoring.svc:9090"
+      url: "http://localhost:8080/sse"
       # Limit this MCP server so it is ONLY used for alerts from a specific cluster
       # condition:
       #   labels:
@@ -99,8 +95,20 @@ resources:
     cpu: 100m
     memory: 256Mi
 
-nodeSelector: {}
+# ------------------------------------------------------------------------------
+# Sidecar Containers (e.g. MCP Servers)
+# ------------------------------------------------------------------------------
+sidecars: {}
+  # prometheus-mcp:
+  #   image: ghcr.io/pab1it0/prometheus-mcp-server:latest
+  #   env:
+  #     - name: PROMETHEUS_URL
+  #       value: "http://prometheus-operated.monitoring.svc:9090"
+  #     - name: MCP_PORT
+  #       value: "8080"
+  #     - name: transport
+  #       value: "sse"
+  #   ports:
+  #     - containerPort: 8080
 
-tolerations: []
-
-affinity: {}
+resources:

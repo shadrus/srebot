@@ -22,5 +22,28 @@ services:
       timeout: 3s
       retries: 5
 
+  prometheus-mcp:
+    image: ghcr.io/pab1it0/prometheus-mcp-server:latest
+    restart: unless-stopped
+    network_mode: "host"
+    environment:
+      PROMETHEUS_URL: "http://localhost:19000"
+      PROMETHEUS_MCP_BIND_PORT: "18000"
+      PROMETHEUS_MCP_SERVER_TRANSPORT: "sse"
+
+  elasticsearch-mcp:
+    image: docker.elastic.co/mcp/elasticsearch:latest
+    restart: unless-stopped
+    command: [ "http", "--address", "0.0.0.0:18001" ]
+    network_mode: "host"
+    environment:
+      ES_URL: "http://localhost:19001"
+      # ES_USERNAME: "admin"
+      # ES_PASSWORD: "secret"      
+      #extra_hosts:
+      #  - "host.docker.internal:host-gateway"
+      #ports:
+      #  - "18001:8080"
+
 volumes:
   redis_data:

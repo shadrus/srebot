@@ -43,15 +43,14 @@ _EXTERNAL_TOOL_TO_CLIENT: dict[str, Any] = {}
 
 async def register_external_mcp(
     name: str,
-    command: str,
-    args: list[str] | None = None,
-    env: dict[str, str] | None = None,
+    url: str,
+    transport: str = "sse",
     read_only: bool = False,
 ):
-    """Connect to an external MCP server and register its tools with a prefix."""
+    """Connect to an external MCP server via SSE/HTTP and register its tools with a prefix."""
     from srebot.mcp.mcp_client import ExternalMCPClient
 
-    client = ExternalMCPClient(command, args, env)
+    client = ExternalMCPClient(url, transport)
     try:
         await client.connect()
         _EXTERNAL_CLIENTS.append(client)
