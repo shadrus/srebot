@@ -79,7 +79,7 @@ class AlertStore:
             return None
         try:
             return json.loads(value).get("status")
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             return None
 
     async def ping(self) -> None:

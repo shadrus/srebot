@@ -3,26 +3,29 @@ from srebot.parser.alert_parser import AlertStatus, parse_alert_message, update_
 
 def setup_module(module):
     """Seed the dynamis parser with same strategies used in prod for local tests."""
-    update_remote_strategies([
-        {
-            "name": "Standard",
-            "firing_pattern": r"(alerts?\s+firing|\[FIRING:.*\]|FIRING|🔥|\*Alert:\*)",
-            "resolved_pattern": r"(alerts?\s+resolved|\[RESOLVED:.*\]|RESOLVED|✅|\[RESOLVED\])",
-            "labels_header_pattern": r"^(Labels|Details):\s*$",
-            "annotations_header_pattern": r"^Annotations:\s*$",
-            "kv_pattern": r"^\s*[\-•]\s*(.+?)\s*[=:]\s*(.+)$",
-            "priority": 10
-        },
-        {
-            "name": "Markdown",
-            "firing_pattern": r"(alerts?\s+firing|\[FIRING:.*\]|FIRING|🔥|\*Alert:\*)",
-            "resolved_pattern": r"(alerts?\s+resolved|\[RESOLVED:.*\]|RESOLVED|✅|\[RESOLVED\])",
-            "labels_header_pattern": r"^\*?(Details|Labels):\*?\s*$",
-            "annotations_header_pattern": r"^\*?Annotations:\*?\s*$",
-            "kv_pattern": r"^\s*\*?\s*[•\-]?\s*\*?\s*(.+?)\s*\*?\s*[:=]\*?\s*(.+)$",
-            "priority": 20
-        }
-    ])
+    update_remote_strategies(
+        [
+            {
+                "name": "Standard",
+                "firing_pattern": r"(alerts?\s+firing|\[FIRING:.*\]|FIRING|🔥|\*Alert:\*)",
+                "resolved_pattern": r"(alerts?\s+resolved|\[RESOLVED:.*\]|RESOLVED|✅|\[RESOLVED\])",
+                "labels_header_pattern": r"^(Labels|Details):\s*$",
+                "annotations_header_pattern": r"^Annotations:\s*$",
+                "kv_pattern": r"^\s*[\-•]\s*(.+?)\s*[=:]\s*(.+)$",
+                "priority": 10,
+            },
+            {
+                "name": "Markdown",
+                "firing_pattern": r"(alerts?\s+firing|\[FIRING:.*\]|FIRING|🔥|\*Alert:\*)",
+                "resolved_pattern": r"(alerts?\s+resolved|\[RESOLVED:.*\]|RESOLVED|✅|\[RESOLVED\])",
+                "labels_header_pattern": r"^\*?(Details|Labels):\*?\s*$",
+                "annotations_header_pattern": r"^\*?Annotations:\*?\s*$",
+                "kv_pattern": r"^\s*\*?\s*[•\-]?\s*\*?\s*(.+?)\s*\*?\s*[:=]\*?\s*(.+)$",
+                "priority": 20,
+            },
+        ]
+    )
+
 
 STANDARD_ALERT = """
 🚨 Alerts Firing:
@@ -71,6 +74,7 @@ for longer than 15 minutes on cluster management-cluster.
 Source: http://alertmanager/details
 """
 
+
 def test_parse_standard_alert():
     alerts = parse_alert_message(STANDARD_ALERT)
     assert len(alerts) == 1
@@ -80,6 +84,7 @@ def test_parse_standard_alert():
     assert a.cluster == "prod-1"
     assert a.labels["job"] == "node-exporter"
     assert a.source_url == "http://prometheus/graph"
+
 
 def test_parse_custom_alert():
     alerts = parse_alert_message(CUSTOM_ALERT)
@@ -92,6 +97,7 @@ def test_parse_custom_alert():
     assert a.labels["pod"] == "validator-app-7d77cc9cb-w7wlc"
     assert a.source_url == "http://alertmanager/details"
 
+
 def test_parse_markdown_bold_alert():
     alerts = parse_alert_message(MARKDOWN_BOLD_ALERT)
     assert len(alerts) == 1
@@ -103,11 +109,13 @@ def test_parse_markdown_bold_alert():
     assert a.labels["pod"] == "validator-app-7d77cc9cb-w7wlc"
     assert a.source_url == "http://alertmanager/details"
 
+
 def test_parse_resolved_custom_alert():
     resolved_text = CUSTOM_ALERT.replace("[FIRING:1]", "[RESOLVED:1]")
     alerts = parse_alert_message(resolved_text)
     assert len(alerts) == 1
     assert alerts[0].status == AlertStatus.RESOLVED
+
 
 def test_parse_empty_or_invalid():
     assert parse_alert_message("") == []

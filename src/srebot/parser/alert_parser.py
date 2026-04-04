@@ -59,9 +59,7 @@ class DynamicStrategy:
         self.name = name
         self.firing_re = re.compile(firing_pattern, re.IGNORECASE)
         self.resolved_re = re.compile(resolved_pattern, re.IGNORECASE)
-        self.labels_header_re = re.compile(
-            labels_header_pattern, re.IGNORECASE | re.MULTILINE
-        )
+        self.labels_header_re = re.compile(labels_header_pattern, re.IGNORECASE | re.MULTILINE)
         self.kv_re = re.compile(kv_pattern, re.IGNORECASE)
         self.annotations_header_re = (
             re.compile(annotations_header_pattern, re.IGNORECASE | re.MULTILINE)
@@ -97,7 +95,7 @@ class DynamicStrategy:
         # 2. Split into blocks by labels header
         split_pattern = f"(?={self.labels_header_re.pattern})"
         parts = re.split(split_pattern, text, flags=re.MULTILINE | re.IGNORECASE)
-        
+
         # Only take parts that actually start with the labels header
         blocks = [p.strip() for p in parts if self.labels_header_re.search(p)]
 
@@ -169,7 +167,7 @@ def update_remote_strategies(strategies_data: list[dict[str, Any]]) -> None:
             logger.info("Loaded dynamic parsing strategy: %s", s.get("name"))
         except Exception as e:
             logger.error("Failed to load parsing strategy %s: %s", s.get("name"), e)
-    
+
     # Sort by priority (lower number = higher priority)
     _STRATEGIES = sorted(new_strategies, key=lambda x: x.priority)
 

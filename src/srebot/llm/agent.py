@@ -106,7 +106,7 @@ class AlertAnalysisAgent:
         if not self._token:
             logger.debug("Skipping strategy refresh: SAAS_AGENT_TOKEN not set.")
             return
-            
+
         client = SaaSWSClient(ws_url=self._ws_url, token=self._token)
         await client.refresh_strategies()
 

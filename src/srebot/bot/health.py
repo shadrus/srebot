@@ -44,7 +44,7 @@ async def start_health_server() -> web.AppRunner:
     app.router.add_get("/livez", _liveness_handler)
     app.router.add_get("/readyz", _readiness_handler)
 
-    runner = web.AppRunner(app)
+    runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", _HEALTH_PORT)
     await site.start()
