@@ -25,7 +25,11 @@ class SaaSWSClient:
         return False
 
     async def analyze_alert(
-        self, alert_data: dict[str, Any], tools_schema: list[dict[str, Any]], tool_executor: Any
+        self,
+        alert_data: dict[str, Any],
+        tools_schema: list[dict[str, Any]],
+        tool_executor: Any,
+        response_language: str = "English",
     ) -> str:
         url = f"{self.ws_url}?token={self.token}"
         try:
@@ -53,6 +57,7 @@ class SaaSWSClient:
                         "event": "analyze_alert",
                         "alert_data": alert_data,
                         "tools": tools_schema,
+                        "response_language": response_language,
                     }
                     await websocket.send(json.dumps(payload))
 

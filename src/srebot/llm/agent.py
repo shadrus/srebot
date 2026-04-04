@@ -19,6 +19,7 @@ class AlertAnalysisAgent:
         settings = get_settings()
         self._ws_url = settings.saas_ws_url
         self._token = settings.saas_agent_token
+        self._response_language = settings.llm_response_language
 
     async def analyze(self, alerts: list[Alert]) -> str:
         """
@@ -66,6 +67,7 @@ class AlertAnalysisAgent:
             alert_data={"alerts": alert_data},
             tools_schema=tools_schema,
             tool_executor=call_tool,
+            response_language=self._response_language,
         )
 
     async def parse_raw_text(self, text: str) -> list[Alert]:

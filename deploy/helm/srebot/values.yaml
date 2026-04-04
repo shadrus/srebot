@@ -41,22 +41,21 @@ securityContext:
 config:
   saas_ws_url: "wss://api.srebot.site360.tech/api/v1/agent/connect"
   llm_response_language: "English"
-  llm_max_iterations: 10
-  
+
   log_level: "INFO"
   dry_run: false
-  
+
   # How long (seconds) to remember a firing alert fingerprint
   alert_fingerprint_ttl: 86400
 
   # MCP Servers registry
-  mcp_servers:
-    prometheus:
-      url: "http://localhost:8080/sse"
-      # Limit this MCP server so it is ONLY used for alerts from a specific cluster
-      # condition:
-      #   labels:
-      #     cluster: "prod"
+  mcp_servers: {}
+    # prometheus:
+    #   url: "http://localhost:18080/sse"
+    #   # Limit this MCP server so it is ONLY used for alerts from a specific cluster
+    #   condition:
+    #     labels:
+    #       cluster: "prod"
 
   # Alert ignore rules
   ignore_rules:
@@ -105,10 +104,8 @@ sidecars: {}
   #     - name: PROMETHEUS_URL
   #       value: "http://prometheus-operated.monitoring.svc:9090"
   #     - name: MCP_PORT
-  #       value: "8080"
+  #       value: "18080"
   #     - name: transport
   #       value: "sse"
   #   ports:
-  #     - containerPort: 8080
-
-resources:
+  #     - containerPort: 18080
