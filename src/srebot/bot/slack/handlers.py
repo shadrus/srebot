@@ -14,49 +14,22 @@ from srebot.state.store import get_store
 
 logger = logging.getLogger(__name__)
 
-# HTML tags produced by the SaaS LLM agent → Slack mrkdwn equivalents.
-# Anchor tags are handled separately because the resulting <url|text> format
-# would be incorrectly stripped by the generic tag-removal pattern.
-_ANCHOR_RE = re.compile(r'<a href="(.*?)".*?>(.*?)</a>', re.DOTALL)
-_ANCHOR_PLACEHOLDER = "\x00SLACK_LINK({url}|{text})\x00"
-_ANCHOR_PLACEHOLDER_RE = re.compile(r"\x00SLACK_LINK\((.*?)\|(.*?)\)\x00", re.DOTALL)
-
-_HTML_TO_SLACK = [
-    (re.compile(r"<b>(.*?)</b>", re.DOTALL), r"*\1*"),
-    (re.compile(r"<strong>(.*?)</strong>", re.DOTALL), r"*\1*"),
-    (re.compile(r"<i>(.*?)</i>", re.DOTALL), r"_\1_"),
-    (re.compile(r"<em>(.*?)</em>", re.DOTALL), r"_\1_"),
-    (re.compile(r"<code>(.*?)</code>", re.DOTALL), r"`\1`"),
-    (re.compile(r"<pre>(.*?)</pre>", re.DOTALL), r"```\1```"),
-    (re.compile(r"<br\s*/?>", re.IGNORECASE), "\n"),
-    # Strip any remaining unknown tags
-    (re.compile(r"<[^>]+>"), ""),
-]
-
-
-def _html_to_slack(text: str) -> str:
+def _markdown_to_slack(text: str) -> str:
     """
-    Convert HTML produced by the SaaS agent to Slack mrkdwn format.
-
-    Args:
-        text: HTML-formatted string from the LLM response.
-
-    Returns:
-        Slack mrkdwn-formatted string.
+    Convert standard Markdown to Slack mrkdwn format.
     """
-
-    # Step 1: protect anchor tags with a placeholder before generic strip
-    def _anchor_to_placeholder(m: re.Match) -> str:
-        return _ANCHOR_PLACEHOLDER.format(url=m.group(1), text=m.group(2))
-
-    text = _ANCHOR_RE.sub(_anchor_to_placeholder, text)
-
-    # Step 2: apply all other transformations (incl. generic tag strip)
-    for pattern, replacement in _HTML_TO_SLACK:
-        text = pattern.sub(replacement, text)
-
-    # Step 3: restore anchors as Slack mrkdwn links
-    text = _ANCHOR_PLACEHOLDER_RE.sub(lambda m: f"<{m.group(1)}|{m.group(2)}>", text)
+    # 1. Bold: **text** -> *text*
+    text = re.sub(r"\*\*(.*?)\*\*", r"*\1*", text)
+    # 2. Italic: *text* -> _text_ (only if not already bold)
+    # This is tricky because of Slack's non-standard markdown.
+    # We'll do a simple swap for now.
+    text = re.sub(r"(?<!\*)\*(.*?)\*(?!\*)", r"_\1_", text)
+    # 3. Headers: # Header -> *Header*
+    text = re.sub(r"^#+\s+(.*?)$", r"*\1*", text, flags=re.MULTILINE)
+    # 4. Strikethrough: ~~text~~ -> ~text~
+    text = re.sub(r"~~(.*?)~~", r"~\1~", text)
+    # 5. Links: [text](url) -> <url|text>
+    text = re.sub(r"\[(.*?)\]\((.*?)\)", r"<\2|\1>", text)
 
     return text
 
@@ -143,8 +116,8 @@ async def _handle_alert_group(
         logger.exception("LLM analysis failed for group %s", group_fp)
         analysis = f"⚠️ *Analysis failed:* `{exc}`\nPlease investigate manually."
 
-    # Convert HTML from agent to Slack mrkdwn
-    analysis = _html_to_slack(analysis)
+    # Convert Markdown to Slack mrkdwn
+    analysis = _markdown_to_slack(analysis)
 
     # Check if the alert was resolved while we were analyzing
     current_status = await store.get_status(group_fp)

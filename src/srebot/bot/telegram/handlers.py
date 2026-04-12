@@ -7,6 +7,7 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 from srebot.bot.shared import process_alert_text
+from srebot.bot.telegram.html_utils import markdown_to_telegram_html
 from srebot.config import get_settings
 from srebot.llm.agent import get_agent
 from srebot.parser.alert_parser import Alert, AlertStatus
@@ -114,19 +115,30 @@ async def _handle_alert_group(
         return
 
     # ALWAYS update the UI with findings, even if already resolved
+    safe_analysis = markdown_to_telegram_html(analysis)
+
     try:
-        await placeholder.edit_text(analysis, parse_mode=ParseMode.HTML)
+        await placeholder.edit_text(safe_analysis, parse_mode=ParseMode.HTML)
     except Exception as exc:
         logger.warning("Could not edit placeholder (%s), sending new message", exc)
         try:
             await source_msg.reply_text(
-                analysis,
+                safe_analysis,
                 parse_mode=ParseMode.HTML,
                 reply_to_message_id=source_msg.message_id,
             )
         except Exception as exc2:
-            logger.error("Could not send analysis reply: %s", exc2)
-            return
+            logger.error("Could not send analysis reply with HTML (%s), falling back to plain text", exc2)
+            try:
+                # Final fallback: send raw text without any formatting
+                await source_msg.reply_text(
+                    analysis,
+                    parse_mode=None,
+                    reply_to_message_id=source_msg.message_id,
+                )
+            except Exception as exc3:
+                logger.error("Total failure sending analysis reply: %s", exc3)
+                return
 
     # Only restore FIRING state if it wasn't cleared by a RESOLVED message
     if current_status == "analyzing":

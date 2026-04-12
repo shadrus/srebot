@@ -17,6 +17,8 @@ dependencies = [
     "aiohttp>=3.13.5",
     "websockets>=16.0",
     "slack-bolt>=1.27.0",
+    "lxml>=6.0.3",
+    "markdown>=3.10.2",
 ]
 
 [tool.hatch.build.targets.wheel]
