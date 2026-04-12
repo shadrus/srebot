@@ -31,12 +31,15 @@ class SaaSWSClient:
         tool_executor: Any,
         response_language: str = "English",
     ) -> str:
-        url = f"{self.ws_url}?token={self.token}"
         try:
             logger.info("Connecting to SaaS Control Plane at %s...", self.ws_url)
             async with asyncio.timeout(600):  # 10m total analysis limit
                 async with connect(
-                    url, ping_interval=20, ping_timeout=20, close_timeout=10
+                    self.ws_url,
+                    additional_headers={"Authorization": f"Bearer {self.token}"},
+                    ping_interval=20,
+                    ping_timeout=20,
+                    close_timeout=10
                 ) as websocket:
                     # 1. Wait for initial strategies (always sent by server on connect)
                     # and then send the initial alert data
@@ -131,10 +134,12 @@ class SaaSWSClient:
 
     async def extract_alerts(self, text: str) -> list[dict[str, Any]]:
         """Request the SaaS Control Plane to parse raw text into structured Alert objects."""
-        url = f"{self.ws_url}?token={self.token}"
         try:
             logger.info("Connecting to SaaS Control Plane for smart parsing...")
-            async with connect(url) as websocket:
+            async with connect(
+                self.ws_url,
+                additional_headers={"Authorization": f"Bearer {self.token}"}
+            ) as websocket:
                 # Wait for strategies
                 while True:
                     raw = await websocket.recv()
@@ -170,10 +175,12 @@ class SaaSWSClient:
 
     async def refresh_strategies(self) -> None:
         """Connect briefly to the SaaS Control Plane to fetch the latest parsing strategies."""
-        url = f"{self.ws_url}?token={self.token}"
         try:
             logger.info("Connecting to SaaS Control Plane to refresh parsing strategies...")
-            async with connect(url) as websocket:
+            async with connect(
+                self.ws_url,
+                additional_headers={"Authorization": f"Bearer {self.token}"}
+            ) as websocket:
                 # The server sends 'update_strategies' immediately after accept
                 raw = await websocket.recv()
                 msg = json.loads(raw)
