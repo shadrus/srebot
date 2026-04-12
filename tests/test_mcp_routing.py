@@ -13,7 +13,7 @@ async def test_agent_server_routing(mocker):
     configs = {
         "prod_server": MCPServerConfig(
             name="prod_server",
-            command="dummy",
+            url="http://dummy",
             condition=FilterCondition(labels={"cluster": "prod"}),
         )
     }

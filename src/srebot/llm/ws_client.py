@@ -11,11 +11,14 @@ logger = logging.getLogger(__name__)
 
 
 class SaaSWSClient:
+    ws_url: str
+    token: str
+
     def __init__(self, ws_url: str, token: str) -> None:
         self.ws_url = ws_url
         self.token = token
 
-    async def _handle_server_event(self, event_data: dict) -> bool:
+    async def _handle_server_event(self, event_data: dict[str, Any]) -> bool:
         """Handle non-request-specific events like strategy updates. Returns True if handled."""
         event = event_data.get("event")
         if event == "update_strategies":
@@ -83,13 +86,14 @@ class SaaSWSClient:
                         elif event == "execute_tools":
                             tools = response.get("tools", [])
 
-                            async def run_tool(tc: dict) -> dict:
-                                t_id = tc.get("tool_call_id")
-                                t_name = tc.get("tool_name")
+                            async def run_tool(tc: dict[str, Any]) -> dict[str, Any]:
+                                t_id = str(tc.get("tool_call_id", ""))
+                                t_name = str(tc.get("tool_name", ""))
                                 t_args = tc.get("args", {})
 
                                 logger.info("SaaS requested tool execution: %s", t_name)
-                                used_tools.add(t_name)
+                                if t_name:
+                                    used_tools.add(t_name)
 
                                 try:
                                     args_str = (
