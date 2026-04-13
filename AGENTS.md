@@ -29,20 +29,35 @@ uv run ruff format src/ tests/
 ```
 
 Configuration lives in `pyproject.toml` (`[tool.ruff]`):
+
 - Line length: **100**
 - Target: **Python 3.14+**
 - Active rule sets: `E`, `F`, `I` (isort), `UP` (pyupgrade)
 
 ### Key Rules
 
-| Rule | Policy |
-|---|---|
-| `from __future__ import annotations` | **Do not use** — Python 3.14 handles this natively via PEP 649 |
-| Type unions | Use `X \| Y` (native), not `Optional[X]` or `Union[X, Y]` |
-| `timezone.utc` | Use `datetime.UTC` (UP017) |
-| f-strings without placeholders | Remove `f` prefix (F541) |
-| Long lines in multiline string constants | Suppress with `# noqa: E501` on the assignment line |
-| Imports | Sorted by ruff/isort automatically — never reorder manually |
+| Rule                                     | Policy                                                         |
+| ---------------------------------------- | -------------------------------------------------------------- |
+| `from __future__ import annotations`     | **Do not use** — Python 3.14 handles this natively via PEP 649 |
+| Type unions                              | Use `X \| Y` (native), not `Optional[X]` or `Union[X, Y]`      |
+| `timezone.utc`                           | Use `datetime.UTC` (UP017)                                     |
+| f-strings without placeholders           | Remove `f` prefix (F541)                                       |
+| Long lines in multiline string constants | Suppress with `# noqa: E501` on the assignment line            |
+| Imports                                  | Sorted by ruff/isort automatically — never reorder manually    |
+
+### Modern Type Hints (Python 3.13+)
+
+All new code **must** use modern Python type hint conventions. Legacy `typing` module constructs are prohibited unless no native equivalent exists.
+
+| Rule                                 | Policy                                                                                                   |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| `from __future__ import annotations` | **Do not use** — Python 3.13+ handles this natively via PEP 649                                          |
+| Type unions                          | Use `X \| Y` (PEP 604), not `Optional[X]` or `Union[X, Y]`                                               |
+| Generic aliases                      | Use `list[X]`, `dict[K, V]`, `tuple[X, ...]` — not `typing.List`, `typing.Dict`                          |
+| `TypedDict`                          | Use `class MyDict(TypedDict):` for structured dicts                                                      |
+| `@override`                          | Use `typing.override` (PEP 698) when overriding base class methods                                       |
+| Type narrowing                       | Use `isinstance(x, int) \| None` patterns; prefer `TypeGuard` / `TypeIs` (PEP 742) for custom guards     |
+| Runtime type checking                | Prefer `isinstance` checks or `type(x) is Y` — avoid `typing.get_type_hints` at runtime unless necessary |
 
 ### Docstrings
 
@@ -107,12 +122,12 @@ uv run pytest tests/ -x        # stop on first failure
 
 ### Coverage Expectations
 
-| Module | What to test |
-|---|---|
+| Module                   | What to test                                                             |
+| ------------------------ | ------------------------------------------------------------------------ |
 | `parser/alert_parser.py` | Parsing, edge cases, multi-alert, firing/resolved, fingerprint stability |
-| `state/store.py` | All dedup state transitions with mock Redis |
-| `mcp/tools.py` | Happy path + cluster-not-found error with mock `httpx` |
-| `llm/agent.py` | Tool-call loop with mock OpenAI client |
+| `state/store.py`         | All dedup state transitions with mock Redis                              |
+| `mcp/tools.py`           | Happy path + cluster-not-found error with mock `httpx`                   |
+| `llm/agent.py`           | Tool-call loop with mock OpenAI client                                   |
 
 ---
 
