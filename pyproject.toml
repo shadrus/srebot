@@ -19,6 +19,7 @@ dependencies = [
     "slack-bolt>=1.27.0",
     "lxml>=6.0.3",
     "markdown>=3.10.2",
+    "discord-py>=2.7.1",
 ]
 
 [tool.hatch.build.targets.wheel]

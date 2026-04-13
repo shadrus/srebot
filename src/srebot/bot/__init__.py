@@ -7,9 +7,11 @@ to get the single active integration at runtime.
 """
 
 from srebot.bot import registry
+from srebot.bot.discord import DiscordBotIntegration
 from srebot.bot.slack import SlackBotIntegration
 from srebot.bot.telegram import TelegramBotIntegration
 
 # Register built-in integrations.
 registry.register("telegram", TelegramBotIntegration)
 registry.register("slack", SlackBotIntegration)
+registry.register("discord", DiscordBotIntegration)

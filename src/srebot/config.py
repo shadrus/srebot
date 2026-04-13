@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     slack_app_token: str = ""
     slack_channel_id: str = ""
 
+    # Discord
+    discord_bot_token: str = ""
+    discord_channel_id: int = 0
+
     # SaaS Control Plane
     saas_ws_url: str = "wss://api.srebot.site360.tech/api/v1/agent/connect"
     saas_agent_token: str = ""

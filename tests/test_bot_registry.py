@@ -61,6 +61,17 @@ def test_telegram_configured_returns_telegram_integration():
     assert isinstance(bot, TelegramBotIntegration)
 
 
+def test_discord_configured_returns_discord_integration():
+    """When discord_bot_token is set, create_bot returns DiscordBotIntegration."""
+    # Import here to trigger registration of the built-in integrations.
+    import srebot.bot  # noqa: F401
+    from srebot.bot.discord import DiscordBotIntegration
+
+    settings = _make_settings(discord_bot_token="fake-token", discord_channel_id=123)
+    bot = create_bot(settings)
+    assert isinstance(bot, DiscordBotIntegration)
+
+
 def test_no_integration_configured_raises():
     """When no integration has credentials, create_bot raises RuntimeError."""
 
