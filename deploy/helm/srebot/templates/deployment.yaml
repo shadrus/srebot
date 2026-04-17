@@ -5,6 +5,11 @@ metadata:
   labels:
     {{- include "ai-observability-bot.labels" . | nindent 4 }}
 spec:
+  # Recreate strategy ensures the old pod is fully terminated before
+  # the new one starts. This prevents two bot instances from competing
+  # for the same chat messages during a rolling update.
+  strategy:
+    type: Recreate
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
