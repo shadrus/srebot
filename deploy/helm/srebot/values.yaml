@@ -102,10 +102,19 @@ sidecars: {}
   #   image: ghcr.io/pab1it0/prometheus-mcp-server:latest
   #   env:
   #     - name: PROMETHEUS_URL
-  #       value: "http://prometheus-operated.monitoring.svc:9090"
-  #     - name: MCP_PORT
-  #       value: "18080"
-  #     - name: transport
+  #       value: "http://kube-prometheus-stack-prometheus.prometheus-stack:9090"
+  #     - name: PROMETHEUS_MCP_BIND_PORT
+  #       value: "18000"
+  #     - name: PROMETHEUS_MCP_SERVER_TRANSPORT
   #       value: "sse"
   #   ports:
-  #     - containerPort: 18080
+  #     - containerPort: 18000
+  #
+  # elasticsearch-mcp:
+  #   image: docker.elastic.co/mcp/elasticsearch:latest
+  #   args: ["http", "--address", "0.0.0.0:18001"]
+  #   env:
+  #     - name: ES_URL
+  #       value: "http://elasticsearch-master.elk:9200"
+  #   ports:
+  #     - containerPort: 18001

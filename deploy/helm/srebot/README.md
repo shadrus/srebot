@@ -31,6 +31,7 @@ secrets:
 ```
 
 Your `srebot-secret` must contain the following keys:
+
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHANNEL_ID`
 - `SAAS_AGENT_TOKEN`
@@ -55,6 +56,7 @@ As of version 0.1.0, SREBot connects to MCP servers via network (SSE/HTTP). The 
 > **Kubernetes Syntax:** Kubernetes uses a **list** for environment variables (`- name: ... / value: ...`). Do not use the dictionary syntax from Docker Compose.
 
 #### Step A: Define the sidecar in `values.yaml`
+
 ```yaml
 # Correct structure
 config:
@@ -66,11 +68,13 @@ sidecars:
     image: ghcr.io/pab1it0/prometheus-mcp-server:latest
     env:
       - name: PROMETHEUS_URL
-        value: "http://prometheus-operated.monitoring.svc:9090"
+        value: "http://kube-prometheus-stack-prometheus.prometheus-stack:9090"
+      - name: PROMETHEUS_MCP_BIND_PORT
+        value: "18000"
       - name: PROMETHEUS_MCP_SERVER_TRANSPORT
         value: "sse"
     ports:
-      - containerPort: 8080
+      - containerPort: 18000
 
   elasticsearch-mcp:
     image: docker.elastic.co/mcp/elasticsearch:latest
@@ -78,19 +82,27 @@ sidecars:
     args: ["http", "--address", "0.0.0.0:18001"]
     env:
       - name: ES_URL
-        value: "http://elasticsearch-master:9200"
+        value: "http://elasticsearch-master.elk:9200"
     ports:
       - containerPort: 18001
 ```
 
 #### Step B: Point SREBot to the sidecar
+
 All containers in a Pod share the same network namespace, so use `localhost`:
+
 ```yaml
 config:
   mcp_servers:
     prometheus:
-      url: "http://localhost:8080/sse"
+      url: "http://localhost:18000/sse"
       transport: "sse"
+      read_only: true
+
+    elasticsearch:
+      url: "http://localhost:18001/mcp"
+      transport: "http"
+      read_only: true
 ```
 
 ### 4. Ignoring Specific Alerts
@@ -103,7 +115,7 @@ config:
     # Example 1: Ignore by exact label match
     - name: "Ignore Watchdog"
       condition:
-        labels: 
+        labels:
           alertname: "Watchdog"
 
     # Example 2: Ignore EVERYTHING except the production cluster
@@ -137,7 +149,6 @@ redis:
   enabled: false
   url: "redis://my-redis-cluster.database.svc.cluster.local:6379/1"
 ```
-
 
 ## License
 
