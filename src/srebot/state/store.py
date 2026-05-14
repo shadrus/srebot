@@ -82,6 +82,121 @@ class AlertStore:
         except json.JSONDecodeError, TypeError:
             return None
 
+    async def save_followup_context(
+        self,
+        fingerprint: str,
+        rca_text: str,
+        alert_data: list[dict],
+        incident_id: str | None = None,
+    ) -> None:
+        """
+        Persist the RCA text and alert data for follow-up question handling.
+
+        Args:
+            fingerprint: Alert group fingerprint.
+            rca_text: The RCA analysis text shown to the engineer.
+            alert_data: List of alert dicts (for tool routing in follow-up).
+        """
+        settings = get_settings()
+        payload = json.dumps({"rca_text": rca_text, "alert_data": alert_data, "turns": 0, "incident_id": incident_id})
+        await self._redis.set(
+            f"alert:followup:{fingerprint}",
+            payload,
+            ex=settings.followup_ttl,
+        )
+        logger.debug("Saved follow-up context: %s", fingerprint)
+
+    async def get_followup_context(self, fingerprint: str) -> dict | None:
+        """
+        Retrieve the follow-up context for the given alert group.
+
+        Args:
+            fingerprint: Alert group fingerprint.
+
+        Returns:
+            Dict with keys ``rca_text``, ``alert_data``, ``turns``, or None if expired.
+        """
+        value = await self._redis.get(f"alert:followup:{fingerprint}")
+        if value is None:
+            return None
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    async def register_bot_message(self, message_id: int | str, fingerprint: str) -> None:
+        """
+        Store a reverse index from bot message ID to alert group fingerprint.
+
+        Used to detect when a user replies to a bot RCA message.
+
+        Args:
+            message_id: Telegram/Discord/Slack message ID of the bot's RCA reply.
+            fingerprint: Alert group fingerprint to associate with this message.
+        """
+        settings = get_settings()
+        await self._redis.set(
+            f"followup:bymsid:{message_id}",
+            fingerprint,
+            ex=settings.followup_ttl,
+        )
+        logger.debug("Registered bot message %s → %s", message_id, fingerprint)
+
+    async def get_fp_by_message_id(self, message_id: int | str) -> str | None:
+        """
+        Look up the alert group fingerprint by a bot message ID.
+
+        Args:
+            message_id: Bot message ID to look up.
+
+        Returns:
+            Alert group fingerprint, or None if not found / expired.
+        """
+        value = await self._redis.get(f"followup:bymsid:{message_id}")
+        return value  # already str (decode_responses=True)
+
+    async def increment_followup_turns(self, fingerprint: str) -> int:
+        """
+        Atomically increment the follow-up turn counter for an alert group.
+
+        Args:
+            fingerprint: Alert group fingerprint.
+
+        Returns:
+            New turn count after increment. Returns 0 if context no longer exists.
+        """
+        key = f"alert:followup:{fingerprint}"
+        value = await self._redis.get(key)
+        if value is None:
+            return 0
+        try:
+            data = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return 0
+        data["turns"] = data.get("turns", 0) + 1
+        ttl = await self._redis.ttl(key)
+        await self._redis.set(key, json.dumps(data), ex=max(ttl, 1))
+        return data["turns"]
+
+    async def check_and_set_user_cooldown(self, user_id: int | str) -> bool:
+        """
+        Check if a user is in cooldown; set the cooldown key if not.
+
+        Uses Redis SET NX to atomically check-and-set in one operation.
+
+        Args:
+            user_id: Platform user identifier.
+
+        Returns:
+            True if the user IS in cooldown (request should be throttled),
+            False if the cooldown was just set (request is allowed).
+        """
+        settings = get_settings()
+        key = f"followup:cooldown:{user_id}"
+        # SET NX returns True if key was set (not in cooldown), False if already existed
+        was_set = await self._redis.set(key, "1", ex=settings.followup_user_cooldown_sec, nx=True)
+        return not was_set  # True means "in cooldown"
+
     async def ping(self) -> None:
         """Ping the underlying Redis to ensure connectivity."""
         await self._redis.ping()

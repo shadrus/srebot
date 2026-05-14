@@ -33,7 +33,7 @@ class SaaSWSClient:
         tools_schema: list[dict[str, Any]],
         tool_executor: Any,
         response_language: str = "English",
-    ) -> str:
+    ) -> tuple[str, str | None]:
         try:
             logger.info("Connecting to SaaS Control Plane at %s...", self.ws_url)
             async with asyncio.timeout(600):  # 10m total analysis limit
@@ -76,12 +76,13 @@ class SaaSWSClient:
 
                         if event == "final_analysis":
                             content = response.get("text", "")
+                            incident_id = response.get("incident_id")
                             if used_tools:
                                 tools_str = ", ".join(
                                     f"<code>{t}</code>" for t in sorted(used_tools)
                                 )
                                 content += f"\n\n<b>🛠 Tools used:</b> {tools_str}"
-                            return content
+                            return content, incident_id
 
                         elif event == "execute_tools":
                             tools = response.get("tools", [])
@@ -119,7 +120,7 @@ class SaaSWSClient:
                         elif event == "error":
                             msg = response.get("message")
                             logger.error("SaaS Error: %s", msg)
-                            return f"⚠️ Control Plane Error: {msg}"
+                            return f"⚠️ Control Plane Error: {msg}", None
 
                         elif await self._handle_server_event(response):
                             continue
@@ -131,9 +132,140 @@ class SaaSWSClient:
             return (
                 "⚠️ <b>Analysis timed out:</b> The AI took too long to respond. "
                 "Please investigate manually."
-            )
+            ), None
         except Exception as e:
             logger.error("WebSocket connection to SaaS failed: %s", e)
+            return f"⚠️ Failed to connect to AI Control Plane: {e}", None
+
+    async def analyze_followup(
+        self,
+        question: str,
+        rca_context: str,
+        alert_data: dict,
+        tools_schema: list[dict],
+        parent_incident_id: str | None = None,
+        response_language: str = "English",
+    ) -> str:
+        """
+        Send a follow-up question to the SaaS Control Plane with RCA context.
+
+        Args:
+            question: The engineer's follow-up question.
+            rca_context: The previous RCA text produced by the bot.
+            alert_data: Original alert data dict (for tool routing).
+            tools_schema: List of OpenAI tool schemas allowed for this cluster.
+            response_language: Language for the LLM response.
+
+        Returns:
+            The bot's follow-up answer as a string.
+        """
+        try:
+            logger.info("Connecting to SaaS Control Plane for follow-up analysis...")
+            async with asyncio.timeout(300):  # 5m — simpler than full RCA
+                async with connect(
+                    self.ws_url,
+                    additional_headers={"Authorization": f"Bearer {self.token}"},
+                    ping_interval=20,
+                    ping_timeout=20,
+                    close_timeout=10,
+                ) as websocket:
+                    # Wait for initial strategies
+                    while True:
+                        raw = await websocket.recv()
+                        msg = json.loads(raw)
+                        if await self._handle_server_event(msg):
+                            break
+                        else:
+                            logger.warning(
+                                "Unexpected event before strategies (follow-up): %s",
+                                msg.get("event"),
+                            )
+                            continue
+
+                    payload = {
+                        "event": "followup_question",
+                        "question": question,
+                        "rca_context": rca_context,
+                        "alert_data": alert_data,
+                        "tools": tools_schema,
+                        "parent_incident_id": parent_incident_id,
+                        "response_language": response_language,
+                    }
+                    await websocket.send(json.dumps(payload))
+
+                    used_tools: set[str] = set()
+                    while True:
+                        response_raw = await websocket.recv()
+                        response = json.loads(response_raw)
+                        event = response.get("event")
+
+                        if event == "final_analysis":
+                            content = response.get("text", "")
+                            if used_tools:
+                                tools_str = ", ".join(
+                                    f"<code>{t}</code>" for t in sorted(used_tools)
+                                )
+                                content += f"\n\n<b>🛠 Tools used:</b> {tools_str}"
+                            return content
+
+                        elif event == "execute_tools":
+                            tools = response.get("tools", [])
+
+                            async def run_tool(tc: dict) -> dict:
+                                t_id = str(tc.get("tool_call_id", ""))
+                                t_name = str(tc.get("tool_name", ""))
+                                t_args = tc.get("args", {})
+
+                                logger.info(
+                                    "SaaS requested tool execution (follow-up): %s", t_name
+                                )
+                                if t_name:
+                                    used_tools.add(t_name)
+
+                                try:
+                                    from srebot.mcp.registry import call_tool
+
+                                    args_str = (
+                                        json.dumps(t_args)
+                                        if isinstance(t_args, dict)
+                                        else t_args
+                                    )
+                                    result = await asyncio.wait_for(
+                                        call_tool(t_name, args_str), timeout=60
+                                    )
+                                    result_str = str(result)
+                                except TimeoutError:
+                                    logger.error("Tool %s timed out after 60s", t_name)
+                                    result_str = "Error: Tool execution timed out after 60s"
+                                except Exception as e:
+                                    logger.error("Tool %s failed: %s", t_name, e)
+                                    result_str = f"Error: {e}"
+
+                                return {"tool_call_id": t_id, "data": result_str}
+
+                            results = await asyncio.gather(*(run_tool(tc) for tc in tools))
+                            result_payload = {"event": "tools_result", "results": results}
+                            await websocket.send(json.dumps(result_payload))
+
+                        elif event == "error":
+                            msg = response.get("message")
+                            logger.error("SaaS Error (follow-up): %s", msg)
+                            return f"⚠️ Control Plane Error: {msg}"
+
+                        elif await self._handle_server_event(response):
+                            continue
+
+                        else:
+                            logger.warning("Unknown event from SaaS (follow-up): %s", event)
+
+        except TimeoutError:
+            logger.error("Follow-up analysis timed out after 5 minutes")
+            return (
+                "⚠️ <b>Analysis timed out:</b> The AI took too long to respond. "
+                "Please try again."
+            )
+        except Exception as e:
+            logger.error("WebSocket connection to SaaS failed (follow-up): %s", e)
             return f"⚠️ Failed to connect to AI Control Plane: {e}"
 
     async def extract_alerts(self, text: str) -> list[dict[str, Any]]:

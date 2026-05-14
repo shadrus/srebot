@@ -111,10 +111,11 @@ async def _handle_alert_group(
 
     # Run LLM analysis
     try:
-        analysis = await agent.analyze(alerts)
+        analysis, incident_id = await agent.analyze(alerts)
     except Exception as exc:
         logger.exception("LLM analysis failed for group %s", group_fp)
         analysis = f"⚠️ *Analysis failed:* `{exc}`\nPlease investigate manually."
+        incident_id = None
 
     # Convert Markdown to Slack mrkdwn
     analysis = _markdown_to_slack(analysis)
@@ -147,6 +148,24 @@ async def _handle_alert_group(
     # Only restore FIRING state if it wasn't cleared by a RESOLVED message
     if current_status == "analyzing":
         await store.mark_firing(group_fp, placeholder_ts)  # type: ignore[arg-type]
+        
+        # Save follow-up context
+        alert_data = [
+            {
+                "status": a.status,
+                "alertname": a.alertname,
+                "cluster": a.cluster,
+                "namespace": a.namespace,
+                "severity": a.severity,
+                "labels": a.labels,
+                "annotations": a.annotations,
+                "fingerprint": a.fingerprint,
+                "source_url": a.source_url,
+            }
+            for a in alerts
+        ]
+        await store.save_followup_context(group_fp, analysis, alert_data, incident_id=incident_id)
+        await store.register_bot_message(str(placeholder_ts), group_fp)
     else:
         logger.info(
             "Alert %s was %s during analysis. Not marking as firing.",
@@ -189,7 +208,63 @@ def register_handlers(app: AsyncApp, settings: Settings) -> None:
         """
         Handler for all channel messages.
 
-        Filters by configured channel, parses alerts, groups them
-        and triggers analysis.
+        Filters by configured channel, detects follow-up thread replies,
+        then falls through to normal alert parsing.
         """
-        await _process_incoming_text(message.get("text", ""), event.get("channel", ""), client)
+        channel_id = event.get("channel", "")
+        text = message.get("text", "")
+        thread_ts = event.get("thread_ts")
+        user_id = event.get("user", "unknown")
+
+        if channel_id != settings.slack_channel_id:
+            logger.debug("Ignoring message from unconfigured channel %s", channel_id)
+            return
+
+        if not text:
+            return
+
+        # --- Follow-up detection: thread replies have thread_ts set ---
+        if thread_ts:
+            from srebot.bot.shared import RejectionReason, handle_followup_question
+
+            answer, rejection = await handle_followup_question(
+                reply_to_id=thread_ts,
+                question=text.strip(),
+                user_id=str(user_id),
+            )
+
+            if rejection is None:
+                # Successful follow-up — reply in thread and skip alert parsing
+                if not settings.dry_run:
+                    try:
+                        await client.chat_postMessage(
+                            channel=channel_id,
+                            text=_markdown_to_slack(answer),
+                            thread_ts=thread_ts,
+                        )
+                    except Exception as exc:
+                        logger.warning("Could not send Slack follow-up answer: %s", exc)
+                else:
+                    logger.info("[DRY-RUN] Slack follow-up answer:\n%s", answer)
+                return
+            elif rejection != RejectionReason.NO_CONTEXT:
+                if rejection == RejectionReason.COOLDOWN:
+                    user_msg = "⏳ Please wait a moment before asking another question."
+                else:
+                    user_msg = (
+                        f"🔒 Follow-up limit reached for this incident "
+                        f"({settings.followup_max_turns}/{settings.followup_max_turns})."
+                    )
+                if not settings.dry_run:
+                    try:
+                        await client.chat_postMessage(
+                            channel=channel_id,
+                            text=user_msg,
+                            thread_ts=thread_ts,
+                        )
+                    except Exception as exc:
+                        logger.warning("Could not send Slack follow-up rejection: %s", exc)
+                return
+            # RejectionReason.NO_CONTEXT → fall through to normal alert parsing
+
+        await _process_incoming_text(text, channel_id, client)

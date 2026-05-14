@@ -84,7 +84,7 @@ async def test_concurrent_resolution_during_analysis(mock_store, mock_agent, moc
 
     async def slow_analyze(_):
         await analyze_event.wait()
-        return "<b>Full Analysis</b>"
+        return "<b>Full Analysis</b>", "uuid-123"
 
     mock_agent.analyze.side_effect = slow_analyze
 
@@ -92,7 +92,7 @@ async def test_concurrent_resolution_during_analysis(mock_store, mock_agent, moc
     with (
         patch("srebot.bot.telegram.handlers.get_store", AsyncMock(return_value=mock_store)),
         patch("srebot.bot.telegram.handlers.get_agent", return_value=mock_agent),
-        patch("srebot.bot.telegram.handlers.get_settings", return_value=MagicMock(dry_run=False)),
+        patch("srebot.bot.telegram.handlers.get_settings", return_value=MagicMock(dry_run=False, followup_ttl=3600)),
     ):
         # Start FIRING handler (Task A)
         task_a = asyncio.create_task(_handle_alert_group(fp, [firing_alert], mock_message))
@@ -116,15 +116,10 @@ async def test_concurrent_resolution_during_analysis(mock_store, mock_agent, moc
     # Verify that:
     # 1. UI was updated with analysis anyway
     placeholder = mock_message.reply_text.return_value
-    placeholder.edit_text.assert_called_once_with("<b>Full Analysis</b>", parse_mode=ANY_PARSE_MODE)
-
-    # 2. mark_firing was NOT called because status was not 'analyzing'
-    mock_store.mark_firing.assert_not_called()
-
-    # Verify that:
-    # 1. UI was updated with analysis anyway
-    placeholder = mock_message.reply_text.return_value
-    placeholder.edit_text.assert_called_once_with("<b>Full Analysis</b>", parse_mode=ANY_PARSE_MODE)
+    assert placeholder.edit_text.call_count == 1
+    call_args = placeholder.edit_text.call_args
+    assert call_args[0][0].startswith("<b>Full Analysis</b>")
+    assert call_args[1].get("parse_mode") == ANY_PARSE_MODE
 
     # 2. mark_firing was NOT called because status was not 'analyzing'
     mock_store.mark_firing.assert_not_called()

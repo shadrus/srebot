@@ -81,7 +81,7 @@ def mock_store():
 @pytest.fixture
 def mock_agent():
     agent = MagicMock()
-    agent.analyze = AsyncMock(return_value="<b>Analysis result</b>")
+    agent.analyze = AsyncMock(return_value=("<b>Analysis result</b>", "incident-123"))
     return agent
 
 
@@ -292,6 +292,7 @@ class TestChannelPostHandler:
         update.channel_post.text = "Just a regular chat message"
         update.channel_post.message_id = 1
         update.channel_post.chat_id = -100
+        update.channel_post.reply_to_message = None
 
         with patch("srebot.bot.telegram.handlers.process_alert_text", AsyncMock()) as mock_proc:
             await channel_post_handler(update, MagicMock())
@@ -325,6 +326,7 @@ class TestChannelPostHandler:
         update.channel_post.text = FIRING_TEXT
         update.channel_post.message_id = 1
         update.channel_post.chat_id = -100
+        update.channel_post.reply_to_message = None
 
         with patch("srebot.bot.telegram.handlers.process_alert_text", AsyncMock()) as mock_proc:
             await channel_post_handler(update, MagicMock())

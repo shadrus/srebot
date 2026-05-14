@@ -87,10 +87,11 @@ async def _handle_alert_group(
 
     # Run LLM analysis
     try:
-        analysis = await agent.analyze(alerts)
+        analysis, incident_id = await agent.analyze(alerts)
     except Exception as exc:
         logger.exception("LLM analysis failed for group %s", group_fp)
         analysis = f"⚠️ **Analysis failed:** `{exc}`\nPlease investigate manually."
+        incident_id = None
 
     # Check if the alert was resolved while we were analyzing
     current_status = await store.get_status(group_fp)
@@ -120,6 +121,24 @@ async def _handle_alert_group(
     # Only restore FIRING state if it wasn't cleared by a RESOLVED message
     if current_status == "analyzing":
         await store.mark_firing(group_fp, str(placeholder.id))
+        
+        # Save follow-up context
+        alert_data = [
+            {
+                "status": a.status,
+                "alertname": a.alertname,
+                "cluster": a.cluster,
+                "namespace": a.namespace,
+                "severity": a.severity,
+                "labels": a.labels,
+                "annotations": a.annotations,
+                "fingerprint": a.fingerprint,
+                "source_url": a.source_url,
+            }
+            for a in alerts
+        ]
+        await store.save_followup_context(group_fp, analysis, alert_data, incident_id=incident_id)
+        await store.register_bot_message(str(placeholder.id), group_fp)
     else:
         logger.info(
             "Alert %s was %s during analysis. Not marking as firing.",
@@ -146,4 +165,46 @@ def register_handlers(bot: commands.Bot, settings: Settings) -> None:
             return
 
         logger.debug("Received message %d from channel_id=%d", message.id, message.channel.id)
+
+        # --- Follow-up detection ---
+        if message.reference and message.reference.message_id:
+            from srebot.bot.shared import RejectionReason, handle_followup_question
+
+            reply_to_id = str(message.reference.message_id)
+            user_id = str(message.author.id)
+            question = message.content.strip()
+
+            answer, rejection = await handle_followup_question(
+                reply_to_id=reply_to_id,
+                question=question,
+                user_id=user_id,
+            )
+
+            if rejection is None:
+                # Successful follow-up — reply and skip alert parsing
+                if not settings.dry_run:
+                    try:
+                        await message.reply(answer[:1900] if len(answer) > 1900 else answer)
+                    except Exception as exc:
+                        logger.warning("Could not send Discord follow-up answer: %s", exc)
+                else:
+                    logger.info("[DRY-RUN] Discord follow-up answer:\n%s", answer)
+                return
+            elif rejection != RejectionReason.NO_CONTEXT:
+                # Cooldown or limit — send user-facing message
+                if rejection == RejectionReason.COOLDOWN:
+                    user_msg = "⏳ Please wait a moment before asking another question."
+                else:
+                    user_msg = (
+                        f"🔒 Follow-up limit reached for this incident "
+                        f"({settings.followup_max_turns}/{settings.followup_max_turns})."
+                    )
+                if not settings.dry_run:
+                    try:
+                        await message.reply(user_msg)
+                    except Exception as exc:
+                        logger.warning("Could not send Discord follow-up rejection: %s", exc)
+                return
+            # RejectionReason.NO_CONTEXT → fall through to normal alert parsing
+
         await process_alert_text(message.content, _handle_alert_group, message)

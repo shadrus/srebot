@@ -1,5 +1,6 @@
 from srebot.bot.telegram.html_utils import markdown_to_telegram_html
 
+
 def test_markdown_to_telegram_bold():
     text = "This is **bold** and *italic*"
     result = markdown_to_telegram_html(text)

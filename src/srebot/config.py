@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     alert_fingerprint_ttl: int = 86400  # seconds
 
+    # Follow-up thread settings
+    followup_max_turns: int = 5  # Max follow-up exchanges per alert group
+    followup_ttl: int = 3600  # Seconds follow-up context window stays open (1 h)
+    followup_user_cooldown_sec: int = 10  # Min seconds between follow-ups per user
+
     # MCP servers config (unified)
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 

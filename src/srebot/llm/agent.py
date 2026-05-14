@@ -21,12 +21,12 @@ class AlertAnalysisAgent:
         self._token = settings.saas_agent_token
         self._response_language = settings.llm_response_language
 
-    async def analyze(self, alerts: list[Alert]) -> str:
+    async def analyze(self, alerts: list[Alert]) -> tuple[str, str | None]:
         """
         Send a group of related alerts to the SaaS Backend for analysis.
         """
         if not self._token:
-            return "⚠️ Cannot analyze: SAAS_AGENT_TOKEN is not configured."
+            return "⚠️ Cannot analyze: SAAS_AGENT_TOKEN is not configured.", None
 
         primary = alerts[0]
 
@@ -67,6 +67,42 @@ class AlertAnalysisAgent:
             alert_data={"alerts": alert_data},
             tools_schema=tools_schema,
             tool_executor=call_tool,
+            response_language=self._response_language,
+        )
+
+    async def followup(
+        self,
+        question: str,
+        rca_text: str,
+        alert_data: list[dict],
+        allowed_servers: list[str] | None = None,
+        parent_incident_id: str | None = None,
+    ) -> str:
+        """
+        Send a follow-up question to the SaaS backend with previous RCA as context.
+
+        Args:
+            question: The engineer's follow-up question.
+            rca_text: Previous RCA analysis text shown to the engineer.
+            alert_data: Original alert dicts for tool routing.
+            allowed_servers: MCP server names allowed for this cluster.
+                If None, all registered servers are used.
+
+        Returns:
+            The bot's follow-up answer.
+        """
+        if not self._token:
+            return "⚠️ Cannot answer: SAAS_AGENT_TOKEN is not configured."
+
+        tools_schema = get_tools_schema(allowed_servers=allowed_servers)
+        client = SaaSWSClient(ws_url=self._ws_url, token=self._token)
+
+        return await client.analyze_followup(
+            question=question,
+            rca_context=rca_text,
+            alert_data={"alerts": alert_data},
+            tools_schema=tools_schema,
+            parent_incident_id=parent_incident_id,
             response_language=self._response_language,
         )
 

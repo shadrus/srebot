@@ -64,12 +64,24 @@ class TelegramBotIntegration(BotIntegration):
 
         # Listen only to the configured channel (safety guard against
         # accidental multi-channel usage).
+        from srebot.bot.telegram.handlers import followup_reply_handler
+
+        # Follow-up replies: detect replies to bot RCA messages in the same group/channel
+        self._app.add_handler(
+            MessageHandler(
+                (filters.ChatType.CHANNEL | filters.ChatType.GROUPS)
+                & filters.Chat(chat_id=self._settings.telegram_channel_id),
+                followup_reply_handler,
+            )
+        )
+
         self._app.add_handler(
             MessageHandler(
                 (filters.ChatType.CHANNEL | filters.ChatType.GROUPS)
                 & filters.Chat(chat_id=self._settings.telegram_channel_id),
                 channel_post_handler,
-            )
+            ),
+            group=1
         )
 
         logger.info(
