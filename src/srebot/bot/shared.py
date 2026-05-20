@@ -78,9 +78,25 @@ async def process_alert_text(
 
     registry = get_ignore_registry()
     active_alerts = [a for a in alerts if not registry.should_ignore(a)]
+
+    # Filter out muted alerts
+    from srebot.bot.commands import extract_chat_id
+    from srebot.state.store import get_store
+
+    chat_id = extract_chat_id(*handler_args)
+    if chat_id:
+        store = await get_store()
+        unmuted_alerts = []
+        for a in active_alerts:
+            if await store.is_muted(chat_id, a.alertname):
+                logger.info("Alert %s skipped because it is muted in chat %s", a.alertname, chat_id)
+            else:
+                unmuted_alerts.append(a)
+        active_alerts = unmuted_alerts
+
     ignored = len(alerts) - len(active_alerts)
     if ignored:
-        logger.info("Ignored %d alert(s) by rules, %d remaining", ignored, len(active_alerts))
+        logger.info("Ignored/muted %d alert(s), %d remaining", ignored, len(active_alerts))
     if not active_alerts:
         return
 

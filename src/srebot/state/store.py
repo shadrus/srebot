@@ -98,7 +98,14 @@ class AlertStore:
             alert_data: List of alert dicts (for tool routing in follow-up).
         """
         settings = get_settings()
-        payload = json.dumps({"rca_text": rca_text, "alert_data": alert_data, "turns": 0, "incident_id": incident_id})
+        payload = json.dumps(
+            {
+                "rca_text": rca_text,
+                "alert_data": alert_data,
+                "turns": 0,
+                "incident_id": incident_id,
+            }
+        )
         await self._redis.set(
             f"alert:followup:{fingerprint}",
             payload,
@@ -121,7 +128,7 @@ class AlertStore:
             return None
         try:
             return json.loads(value)
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             return None
 
     async def register_bot_message(self, message_id: int | str, fingerprint: str) -> None:
@@ -171,7 +178,7 @@ class AlertStore:
             return 0
         try:
             data = json.loads(value)
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             return 0
         data["turns"] = data.get("turns", 0) + 1
         ttl = await self._redis.ttl(key)
@@ -196,6 +203,79 @@ class AlertStore:
         # SET NX returns True if key was set (not in cooldown), False if already existed
         was_set = await self._redis.set(key, "1", ex=settings.followup_user_cooldown_sec, nx=True)
         return not was_set  # True means "in cooldown"
+
+    async def is_muted(self, chat_id: str, alertname: str) -> bool:
+        """
+        Check if alerts are muted for the given chat_id.
+        Mute can be global or specific to an alertname.
+        """
+        # Check global mute
+        global_mute = await self._redis.get(f"mute:global:{chat_id}")
+        if global_mute is not None:
+            return True
+
+        # Check alert-specific mute
+        alert_mute = await self._redis.get(f"mute:alert:{chat_id}:{alertname}")
+        if alert_mute is not None:
+            return True
+
+        return False
+
+    async def set_global_mute(self, chat_id: str, duration_seconds: int) -> None:
+        """Set a global mute for the given chat_id for a duration."""
+        await self._redis.set(f"mute:global:{chat_id}", "1", ex=duration_seconds)
+        logger.info("Global mute set for chat %s for %d seconds", chat_id, duration_seconds)
+
+    async def set_alert_mute(self, chat_id: str, alertname: str, duration_seconds: int) -> None:
+        """Set an alert-specific mute for the given chat_id for a duration."""
+        await self._redis.set(f"mute:alert:{chat_id}:{alertname}", "1", ex=duration_seconds)
+        logger.info(
+            "Alert mute set for chat %s, alert %s for %d seconds",
+            chat_id,
+            alertname,
+            duration_seconds,
+        )
+
+    async def clear_global_mute(self, chat_id: str) -> None:
+        """Clear the global mute for the given chat_id."""
+        await self._redis.delete(f"mute:global:{chat_id}")
+        logger.info("Global mute cleared for chat %s", chat_id)
+
+    async def clear_alert_mute(self, chat_id: str, alertname: str) -> None:
+        """Clear an alert-specific mute for the given chat_id."""
+        await self._redis.delete(f"mute:alert:{chat_id}:{alertname}")
+        logger.info("Alert mute cleared for chat %s, alert %s", chat_id, alertname)
+
+    async def clear_all_mutes(self, chat_id: str) -> None:
+        """Clear global mute and all alert-specific mutes for the given chat_id."""
+        await self._redis.delete(f"mute:global:{chat_id}")
+        # Find all alert-specific keys for this chat
+        async for key in self._redis.scan_iter(match=f"mute:alert:{chat_id}:*"):
+            await self._redis.delete(key)
+        logger.info("All mutes cleared for chat %s", chat_id)
+
+    async def get_active_mutes(self, chat_id: str) -> dict[str, int | None | dict[str, int]]:
+        """
+        Get all active mutes for the given chat_id with their remaining TTLs in seconds.
+        """
+        global_key = f"mute:global:{chat_id}"
+        global_ttl = await self._redis.ttl(global_key)
+
+        global_active_ttl = global_ttl if global_ttl >= 0 else None
+
+        alerts = {}
+        # Find all alert-specific keys for this chat
+        async for key_raw in self._redis.scan_iter(match=f"mute:alert:{chat_id}:*"):
+            key = key_raw.decode() if isinstance(key_raw, bytes) else key_raw
+            ttl = await self._redis.ttl(key)
+            if ttl >= 0:
+                alertname = key.split(":")[-1]
+                alerts[alertname] = ttl
+
+        return {
+            "global_ttl": global_active_ttl,
+            "alerts": alerts,
+        }
 
     async def ping(self) -> None:
         """Ping the underlying Redis to ensure connectivity."""

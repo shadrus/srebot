@@ -8,7 +8,7 @@ def setup_module(module):
             {
                 "name": "Standard",
                 "firing_pattern": r"(alerts?\s+firing|\[FIRING:.*\]|FIRING|🔥|\*Alert:\*)",
-                "resolved_pattern": r"(alerts?\s+resolved|\[RESOLVED:.*\]|RESOLVED|✅|\[RESOLVED\])",
+                "resolved_pattern": r"(alerts?\s+resolved|\[RESOLVED:.*\]|RESOLVED|✅|\[RESOLVED\])",  # noqa: E501
                 "labels_header_pattern": r"^(Labels|Details):\s*$",
                 "annotations_header_pattern": r"^Annotations:\s*$",
                 "kv_pattern": r"^\s*[\-•]\s*(.+?)\s*[=:]\s*(.+)$",
@@ -17,7 +17,7 @@ def setup_module(module):
             {
                 "name": "Markdown",
                 "firing_pattern": r"(alerts?\s+firing|\[FIRING:.*\]|FIRING|🔥|\*Alert:\*)",
-                "resolved_pattern": r"(alerts?\s+resolved|\[RESOLVED:.*\]|RESOLVED|✅|\[RESOLVED\])",
+                "resolved_pattern": r"(alerts?\s+resolved|\[RESOLVED:.*\]|RESOLVED|✅|\[RESOLVED\])",  # noqa: E501
                 "labels_header_pattern": r"^\*?(Details|Labels):\*?\s*$",
                 "annotations_header_pattern": r"^\*?Annotations:\*?\s*$",
                 "kv_pattern": r"^\s*\*?\s*[•\-]?\s*\*?\s*(.+?)\s*\*?\s*[:=]\*?\s*(.+)$",

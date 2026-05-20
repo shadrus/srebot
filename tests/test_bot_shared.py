@@ -3,7 +3,34 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from srebot.bot.shared import group_key, process_alert_text
-from srebot.parser.alert_parser import Alert
+from srebot.parser.alert_parser import Alert, update_remote_strategies
+
+
+def setup_module(module):
+    """Seed the dynamic parser with same strategies used in prod for local tests."""
+    update_remote_strategies(
+        [
+            {
+                "name": "Standard",
+                "firing_pattern": r"(alerts?\s+firing|\[FIRING:.*\]|FIRING|🔥|\*Alert:\*)",
+                "resolved_pattern": r"(alerts?\s+resolved|\[RESOLVED:.*\]|RESOLVED|✅|\[RESOLVED\])",  # noqa: E501
+                "labels_header_pattern": r"^(Labels|Details):\s*$",
+                "annotations_header_pattern": r"^Annotations:\s*$",
+                "kv_pattern": r"^\s*[\-•]\s*(.+?)\s*[=:]\s*(.+)$",
+                "priority": 10,
+            },
+            {
+                "name": "Markdown",
+                "firing_pattern": r"(alerts?\s+firing|\[FIRING:.*\]|FIRING|🔥|\*Alert:\*)",
+                "resolved_pattern": r"(alerts?\s+resolved|\[RESOLVED:.*\]|RESOLVED|✅|\[RESOLVED\])",  # noqa: E501
+                "labels_header_pattern": r"^\*?(Details|Labels):\*?\s*$",
+                "annotations_header_pattern": r"^\*?Annotations:\*?\s*$",
+                "kv_pattern": r"^\s*\*?\s*[•\-]?\s*\*?\s*(.+?)\s*\*?\s*[:=]\*?\s*(.+)$",
+                "priority": 20,
+            },
+        ]
+    )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -157,3 +184,18 @@ class TestProcessAlertText:
         handler = AsyncMock(side_effect=RuntimeError("boom"))
         # Should not raise
         await process_alert_text(FIRING_TEXT, handler)
+
+    async def test_muted_alerts_are_filtered_out(self):
+        handler = AsyncMock()
+        mock_store = AsyncMock()
+        mock_store.is_muted.return_value = True  # Mute everything
+
+        # Mocking extract_chat_id to return "telegram:123"
+        with (
+            patch("srebot.bot.commands.extract_chat_id", return_value="telegram:123"),
+            patch("srebot.state.store.get_store", return_value=mock_store),
+        ):
+            await process_alert_text(FIRING_TEXT, handler, "dummy_msg_obj_or_args")
+
+        handler.assert_not_called()
+        mock_store.is_muted.assert_called_once_with("telegram:123", "CPUHigh")

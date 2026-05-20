@@ -223,6 +223,26 @@ def register_handlers(app: AsyncApp, settings: Settings) -> None:
         if not text:
             return
 
+        # Check for commands
+        from srebot.bot.commands import extract_chat_id, handle_command, is_command_message
+        if is_command_message(text):
+            chat_id = extract_chat_id(channel_id)
+            if chat_id:
+                response = await handle_command(text, thread_ts, chat_id)
+                if response:
+                    if not settings.dry_run:
+                        try:
+                            await client.chat_postMessage(
+                                channel=channel_id,
+                                text=_markdown_to_slack(response),
+                                thread_ts=thread_ts,
+                            )
+                        except Exception as exc:
+                            logger.warning("Could not send Slack command response: %s", exc)
+                    else:
+                        logger.info("[DRY-RUN] Slack command response:\n%s", response)
+                    return
+
         # --- Follow-up detection: thread replies have thread_ts set ---
         if thread_ts:
             from srebot.bot.shared import RejectionReason, handle_followup_question

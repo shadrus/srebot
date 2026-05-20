@@ -164,6 +164,29 @@ def register_handlers(bot: commands.Bot, settings: Settings) -> None:
         if not message.content:
             return
 
+        # Check for commands
+        from srebot.bot.commands import extract_chat_id, handle_command, is_command_message
+        if is_command_message(message.content):
+            chat_id = extract_chat_id(message)
+            if chat_id:
+                reply_to_id = (
+                    str(message.reference.message_id)
+                    if message.reference and message.reference.message_id
+                    else None
+                )
+                response = await handle_command(message.content, reply_to_id, chat_id)
+                if response:
+                    if not settings.dry_run:
+                        try:
+                            await message.reply(
+                                response[:1900] if len(response) > 1900 else response
+                            )
+                        except Exception as exc:
+                            logger.warning("Could not send Discord command response: %s", exc)
+                    else:
+                        logger.info("[DRY-RUN] Discord command response:\n%s", response)
+                    return
+
         logger.debug("Received message %d from channel_id=%d", message.id, message.channel.id)
 
         # --- Follow-up detection ---

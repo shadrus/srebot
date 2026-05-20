@@ -19,17 +19,17 @@ logger = logging.getLogger(__name__)
 MESSAGES = {
     "Russian": {
         "analyzing_alerts": "🔍 <b>Анализирую {count} алерт(ов)…</b>",
-        "ttl_footer": "\n\n<i>💬 Задайте уточняющие вопросы ответом на это сообщение в течение {hours} ч.</i>",
+        "ttl_footer": "\n\n<i>💬 Задайте уточняющие вопросы ответом на это сообщение в течение {hours} ч.</i>",  # noqa: E501
         "analyzing_followup": "🔍 <i>Анализирую...</i>",
         "cooldown": "⏳ <i>Подождите немного перед следующим вопросом.</i>",
-        "limit_reached": "🔒 <i>Лимит уточняющих вопросов по этому инциденту исчерпан ({current}/{max}).</i>",
+        "limit_reached": "🔒 <i>Лимит уточняющих вопросов по этому инциденту исчерпан ({current}/{max}).</i>",  # noqa: E501
     },
     "English": {
         "analyzing_alerts": "🔍 <b>Analyzing {count} alert(s)…</b>",
-        "ttl_footer": "\n\n<i>💬 Ask follow-up questions by replying to this message within {hours} h.</i>",
+        "ttl_footer": "\n\n<i>💬 Ask follow-up questions by replying to this message within {hours} h.</i>",  # noqa: E501
         "analyzing_followup": "🔍 <i>Analyzing...</i>",
         "cooldown": "⏳ <i>Please wait a bit before the next question.</i>",
-        "limit_reached": "🔒 <i>Limit of follow-up questions for this incident reached ({current}/{max}).</i>",
+        "limit_reached": "🔒 <i>Limit of follow-up questions for this incident reached ({current}/{max}).</i>",  # noqa: E501
     },
 }
 
@@ -37,6 +37,7 @@ MESSAGES = {
 def get_msg(key: str) -> str:
     lang = get_settings().llm_response_language
     return MESSAGES.get(lang, MESSAGES["English"]).get(key, "")
+
 
 async def _reply(source_msg: Message, text: str, dry_run: bool) -> Message | None:
     """Send a Telegram reply or, in dry_run mode, log it instead."""
@@ -221,6 +222,19 @@ async def followup_reply_handler(update: Update, context: ContextTypes.DEFAULT_T
     if not question:
         return
 
+    # Check for commands
+    from srebot.bot.commands import extract_chat_id, handle_command, is_command_message
+
+    if is_command_message(question):
+        chat_id = extract_chat_id(msg)
+        if chat_id:
+            response = await handle_command(
+                question, reply_to_id, chat_id, bot_username=context.bot.username
+            )
+            if response:
+                await _reply(msg, markdown_to_telegram_html(response), dry_run)
+                return
+
     logger.debug(
         "Follow-up reply from user=%s to message=%s: %.80s",
         user_id,
@@ -259,7 +273,7 @@ async def followup_reply_handler(update: Update, context: ContextTypes.DEFAULT_T
         else:  # LIMIT_REACHED
             max_turns = get_settings().followup_max_turns
             user_msg = get_msg("limit_reached").format(current=max_turns, max=max_turns)
-        
+
         if indicator:
             try:
                 await indicator.edit_text(user_msg, parse_mode=ParseMode.HTML)
@@ -325,4 +339,19 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     logger.debug("Received message %d from chat_id=%d", msg.message_id, msg.chat_id)
+
+    # Check for commands
+    from srebot.bot.commands import extract_chat_id, handle_command, is_command_message
+
+    if is_command_message(msg.text):
+        chat_id = extract_chat_id(msg)
+        if chat_id:
+            dry_run = get_settings().dry_run
+            response = await handle_command(
+                msg.text, None, chat_id, bot_username=context.bot.username
+            )
+            if response:
+                await _reply(msg, markdown_to_telegram_html(response), dry_run)
+                return
+
     await process_alert_text(msg.text, _handle_alert_group, msg)

@@ -22,9 +22,21 @@ def mock_redis():
     async def fake_delete(key):
         redis._store.pop(key, None)
 
+    async def fake_ttl(key):
+        return 3600 if key in redis._store else -2
+
+    async def fake_scan_iter(match=None):
+        import fnmatch
+
+        for key in list(redis._store.keys()):
+            if match is None or fnmatch.fnmatch(key, match):
+                yield key
+
     redis.get = fake_get
     redis.set = fake_set
     redis.delete = fake_delete
+    redis.ttl = fake_ttl
+    redis.scan_iter = fake_scan_iter
     return redis
 
 
@@ -69,3 +81,42 @@ class TestAlertStore:
     async def test_key_format(self, store, mock_redis):
         await store.mark_firing("myfp", reply_message_id=7)
         assert "alert:myfp" in mock_redis._store
+
+
+class TestAlertStoreMutes:
+    async def test_global_mute(self, store):
+        assert await store.is_muted("chat1", "HighCpu") is False
+
+        await store.set_global_mute("chat1", 3600)
+        assert await store.is_muted("chat1", "HighCpu") is True
+
+        await store.clear_global_mute("chat1")
+        assert await store.is_muted("chat1", "HighCpu") is False
+
+    async def test_alert_mute(self, store):
+        assert await store.is_muted("chat1", "HighCpu") is False
+
+        await store.set_alert_mute("chat1", "HighCpu", 3600)
+        assert await store.is_muted("chat1", "HighCpu") is True
+        assert await store.is_muted("chat1", "LowDisk") is False
+
+        await store.clear_alert_mute("chat1", "HighCpu")
+        assert await store.is_muted("chat1", "HighCpu") is False
+
+    async def test_get_active_mutes(self, store):
+        mutes = await store.get_active_mutes("chat1")
+        assert mutes == {"global_ttl": None, "alerts": {}}
+
+        await store.set_global_mute("chat1", 3600)
+        mutes = await store.get_active_mutes("chat1")
+        assert mutes["global_ttl"] == 3600
+        assert mutes["alerts"] == {}
+
+        await store.set_alert_mute("chat1", "HighCpu", 1800)
+        mutes = await store.get_active_mutes("chat1")
+        assert mutes["global_ttl"] == 3600
+        assert mutes["alerts"] == {"HighCpu": 3600}
+
+        await store.clear_all_mutes("chat1")
+        mutes = await store.get_active_mutes("chat1")
+        assert mutes == {"global_ttl": None, "alerts": {}}

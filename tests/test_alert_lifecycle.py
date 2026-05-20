@@ -92,7 +92,10 @@ async def test_concurrent_resolution_during_analysis(mock_store, mock_agent, moc
     with (
         patch("srebot.bot.telegram.handlers.get_store", AsyncMock(return_value=mock_store)),
         patch("srebot.bot.telegram.handlers.get_agent", return_value=mock_agent),
-        patch("srebot.bot.telegram.handlers.get_settings", return_value=MagicMock(dry_run=False, followup_ttl=3600)),
+        patch(
+            "srebot.bot.telegram.handlers.get_settings",
+            return_value=MagicMock(dry_run=False, followup_ttl=3600),
+        ),
     ):
         # Start FIRING handler (Task A)
         task_a = asyncio.create_task(_handle_alert_group(fp, [firing_alert], mock_message))
