@@ -129,6 +129,13 @@ uv run pytest tests/ -x        # stop on first failure
 | `mcp/tools.py`           | Happy path + cluster-not-found error with mock `httpx`                   |
 | `llm/agent.py`           | Tool-call loop with mock OpenAI client                                   |
 
+### E2E Testing Standards
+
+When writing automated E2E/browser tests (using Playwright, Selenium, etc.), always follow these practices to avoid false-positive test runs:
+1. **Simulate Real User Clicks**: Never use direct URL navigation (e.g. `page.goto`) to jump between internal application pages if a user interface element exists. Locate the navigation link/button and trigger a click event to ensure it is not obscured by overlay elements (like backdrops or stacking context overlays).
+2. **No Force Actions**: Do not bypass native browser state checks using forced interactions (such as `force=True`). Let the test framework verify that elements are visible, active, and clickable.
+3. **Verify Transitions**: After simulating a click, assert that the application state has successfully transitioned (e.g. wait for the URL change or check that a key element on the destination page becomes visible) before performing screenshots or finishing the test steps.
+
 ---
 
 ## Git Workflow
