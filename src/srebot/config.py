@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     followup_ttl: int = 3600  # Seconds follow-up context window stays open (1 h)
     followup_user_cooldown_sec: int = 10  # Min seconds between follow-ups per user
 
+    # MCP connection retry settings (for sidecar startup races)
+    mcp_connect_retries: int = 5  # Max connection attempts per MCP server
+    mcp_connect_retry_delay: float = 3.0  # Base delay in seconds (doubles each retry)
+
     # MCP servers config (unified)
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 

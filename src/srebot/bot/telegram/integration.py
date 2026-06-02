@@ -81,7 +81,7 @@ class TelegramBotIntegration(BotIntegration):
                 & filters.Chat(chat_id=self._settings.telegram_channel_id),
                 channel_post_handler,
             ),
-            group=1
+            group=1,
         )
 
         logger.info(

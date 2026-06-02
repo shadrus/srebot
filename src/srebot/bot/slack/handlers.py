@@ -14,6 +14,7 @@ from srebot.state.store import get_store
 
 logger = logging.getLogger(__name__)
 
+
 def _markdown_to_slack(text: str) -> str:
     """
     Convert standard Markdown to Slack mrkdwn format.
@@ -148,7 +149,7 @@ async def _handle_alert_group(
     # Only restore FIRING state if it wasn't cleared by a RESOLVED message
     if current_status == "analyzing":
         await store.mark_firing(group_fp, placeholder_ts)  # type: ignore[arg-type]
-        
+
         # Save follow-up context
         alert_data = [
             {
@@ -225,6 +226,7 @@ def register_handlers(app: AsyncApp, settings: Settings) -> None:
 
         # Check for commands
         from srebot.bot.commands import extract_chat_id, handle_command, is_command_message
+
         if is_command_message(text):
             chat_id = extract_chat_id(channel_id)
             if chat_id:

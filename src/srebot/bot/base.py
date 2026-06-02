@@ -10,6 +10,16 @@ from srebot.state.store import get_store
 logger = logging.getLogger(__name__)
 
 
+def _unpack_exception_detail(exc: BaseException) -> str:
+    """Recursively unwrap ExceptionGroup to produce a readable error string."""
+    if isinstance(exc, BaseExceptionGroup):
+        parts: list[str] = []
+        for sub in exc.exceptions:
+            parts.append(_unpack_exception_detail(sub))
+        return "; ".join(parts)
+    return f"{type(exc).__name__}: {exc}"
+
+
 class BotIntegration(ABC):
     """
     Abstract base class for all chat platform integrations.
@@ -61,13 +71,20 @@ class BotIntegration(ABC):
     # ------------------------------------------------------------------
 
     async def _register_mcp_servers(self) -> None:
-        """Connect to all configured external MCP servers."""
+        """Connect to all configured external MCP servers.
+
+        Raises SystemExit if any MCP server is unreachable after all retries.
+        """
         registry = get_mcp_registry()
         configs = registry.all_configs()
         if not configs:
             logger.warning("No MCP servers configured! Check mcp_servers.yml")
             return
 
+        retries = self._settings.mcp_connect_retries
+        retry_delay = self._settings.mcp_connect_retry_delay
+
+        failed: list[str] = []
         for cfg in configs:
             logger.info("Registering MCP server: %s", cfg.name)
             try:
@@ -76,9 +93,21 @@ class BotIntegration(ABC):
                     url=cfg.url,
                     transport=cfg.transport,
                     read_only=cfg.read_only,
+                    connect_retries=retries,
+                    connect_retry_delay=retry_delay,
                 )
-            except Exception as e:
-                logger.error("Failed to register MCP server %s: %s", cfg.name, e)
+            except BaseException as e:
+                detail = _unpack_exception_detail(e)
+                logger.error("Failed to register MCP server %s: %s", cfg.name, detail)
+                failed.append(cfg.name)
+
+        if failed:
+            logger.critical(
+                "Cannot start — %d MCP server(s) unreachable: %s",
+                len(failed),
+                ", ".join(failed),
+            )
+            raise SystemExit(1)
 
     async def _shutdown_resources(self) -> None:
         """Shutdown MCP connections and Redis on teardown."""

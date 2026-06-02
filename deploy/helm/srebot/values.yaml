@@ -45,6 +45,10 @@ config:
   log_level: "INFO"
   dry_run: false
 
+  # MCP connection retry settings (sidecar containers may still be starting)
+  mcp_connect_retries: 5  # attempts per server
+  mcp_connect_retry_delay: 3.0  # seconds (doubles each retry: 3, 6, 12, 24, 48)
+
   # How long (seconds) to remember a firing alert fingerprint
   alert_fingerprint_ttl: 86400
 

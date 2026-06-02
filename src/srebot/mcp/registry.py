@@ -1,9 +1,11 @@
 """MCP tool registry — manages external MCP clients and their tools."""
 
+import asyncio
 import json
 import logging
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,17 @@ _WRITE_TOOL_PATTERNS = (
 )
 
 
+def _unpack_exceptions(exc: BaseException) -> list[BaseException]:
+    """Recursively unwrap ExceptionGroup / TaskGroup to get leaf causes."""
+    leaves: list[BaseException] = []
+    if isinstance(exc, BaseExceptionGroup):
+        for sub in exc.exceptions:
+            leaves.extend(_unpack_exceptions(sub))
+    else:
+        leaves.append(exc)
+    return leaves
+
+
 def _is_write_tool(tool_name: str) -> bool:
     """Return True if the tool appears to perform write/mutating operations."""
     lower = tool_name.lower()
@@ -41,18 +54,97 @@ _EXTERNAL_TOOL_SCHEMAS: list[dict] = []
 _EXTERNAL_TOOL_TO_CLIENT: dict[str, Any] = {}
 
 
+async def _wait_for_tcp(
+    host: str,
+    port: int,
+    retries: int = 5,
+    base_delay: float = 3.0,
+) -> None:
+    """
+    Wait until a TCP port is reachable using plain asyncio sockets.
+
+    This avoids anyio cancel-scope side effects that occur when the MCP
+    client's streamable-http / SSE transport fails mid-handshake.
+
+    Args:
+        host: Hostname or IP to connect to.
+        port: TCP port number.
+        retries: Max attempts.
+        base_delay: Base delay in seconds (doubles each retry).
+    """
+    for attempt in range(1, retries + 1):
+        try:
+            reader, writer = await asyncio.open_connection(host, port)
+            writer.close()
+            await writer.wait_closed()
+            return
+        except OSError as e:
+            if attempt == retries:
+                logger.error(
+                    "TCP %s:%d not reachable after %d attempts: %s",
+                    host,
+                    port,
+                    retries,
+                    e,
+                )
+                raise
+            delay = base_delay * (2 ** (attempt - 1))
+            logger.warning(
+                "TCP %s:%d not reachable (attempt %d/%d): %s — retrying in %.1fs",
+                host,
+                port,
+                attempt,
+                retries,
+                e,
+                delay,
+            )
+            await asyncio.sleep(delay)
+
+
 async def register_external_mcp(
     name: str,
     url: str,
     transport: str = "sse",
     read_only: bool = False,
+    connect_retries: int = 5,
+    connect_retry_delay: float = 3.0,
 ):
-    """Connect to an external MCP server via SSE/HTTP and register its tools with a prefix."""
+    """
+    Connect to an external MCP server via SSE/HTTP and register its tools with a prefix.
+
+    Before opening the MCP session, performs a TCP readiness check with
+    exponential backoff so that sidecar containers have time to start up.
+    The MCP connection itself is attempted only once (after TCP is confirmed
+    reachable) to avoid anyio cancel-scope corruption.
+
+    Args:
+        name: Unique server name used as tool prefix.
+        url: MCP server endpoint URL.
+        transport: "sse" or "http" (Streamable HTTP).
+        read_only: If True, write-like tools are hidden from the LLM.
+        connect_retries: Max TCP readiness attempts before giving up.
+        connect_retry_delay: Base delay in seconds (doubles each retry).
+    """
     from srebot.mcp.mcp_client import ExternalMCPClient
+
+    parsed = urlparse(url)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+
+    logger.info("Waiting for MCP server %r at %s:%d …", name, host, port)
+    await _wait_for_tcp(host, port, retries=connect_retries, base_delay=connect_retry_delay)
+    logger.info("TCP port %s:%d is open — connecting MCP session", host, port)
 
     client = ExternalMCPClient(url, transport)
     try:
         await client.connect()
+    except BaseException as e:
+        causes = _unpack_exceptions(e)
+        detail = "; ".join(f"{type(c).__name__}: {c}" for c in causes) if causes else str(e)
+        logger.error("Failed to connect to MCP server %s after TCP ready: %s", name, detail)
+        raise
+
+    try:
         _EXTERNAL_CLIENTS.append(client)
 
         tools = await client.get_tools_as_openai_schema()
@@ -92,8 +184,11 @@ async def register_external_mcp(
             skipped,
         )
         logger.debug("  Registered tools: %s", registered_names)
-    except Exception as e:
-        logger.error("Failed to connect to MCP server %s: %s", name, e)
+    except BaseException as e:
+        # ExceptionGroup (TaskGroup) wraps the real error — unwrap for clarity
+        causes = _unpack_exceptions(e)
+        detail = "; ".join(f"{type(c).__name__}: {c}" for c in causes) if causes else str(e)
+        logger.error("Failed to register tools from MCP server %s: %s", name, detail)
         raise
 
 
@@ -220,12 +315,16 @@ def _deduplicate_json(data: Any) -> Any:
 
 
 async def shutdown_mcp():
-    """Close all external MCP connections."""
+    """Close all external MCP connections.
+
+    Suppresses anyio cancel-scope errors during forced shutdown (SystemExit)
+    since the process is already terminating.
+    """
     for client in _EXTERNAL_CLIENTS:
         try:
             await client.close()
-        except Exception as e:
-            logger.warning("Error during MCP client shutdown: %s", e)
+        except BaseException:
+            pass  # Process is shutting down — cancel-scope cleanup is not critical
     _EXTERNAL_CLIENTS.clear()
     _EXTERNAL_TOOL_SCHEMAS.clear()
     _EXTERNAL_TOOL_TO_CLIENT.clear()

@@ -121,7 +121,7 @@ async def _handle_alert_group(
     # Only restore FIRING state if it wasn't cleared by a RESOLVED message
     if current_status == "analyzing":
         await store.mark_firing(group_fp, str(placeholder.id))
-        
+
         # Save follow-up context
         alert_data = [
             {
@@ -166,6 +166,7 @@ def register_handlers(bot: commands.Bot, settings: Settings) -> None:
 
         # Check for commands
         from srebot.bot.commands import extract_chat_id, handle_command, is_command_message
+
         if is_command_message(message.content):
             chat_id = extract_chat_id(message)
             if chat_id:

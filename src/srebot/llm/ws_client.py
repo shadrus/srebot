@@ -42,7 +42,7 @@ class SaaSWSClient:
                     additional_headers={"Authorization": f"Bearer {self.token}"},
                     ping_interval=20,
                     ping_timeout=20,
-                    close_timeout=10
+                    close_timeout=10,
                 ) as websocket:
                     # 1. Wait for initial strategies (always sent by server on connect)
                     # and then send the initial alert data
@@ -216,9 +216,7 @@ class SaaSWSClient:
                                 t_name = str(tc.get("tool_name", ""))
                                 t_args = tc.get("args", {})
 
-                                logger.info(
-                                    "SaaS requested tool execution (follow-up): %s", t_name
-                                )
+                                logger.info("SaaS requested tool execution (follow-up): %s", t_name)
                                 if t_name:
                                     used_tools.add(t_name)
 
@@ -226,9 +224,7 @@ class SaaSWSClient:
                                     from srebot.mcp.registry import call_tool
 
                                     args_str = (
-                                        json.dumps(t_args)
-                                        if isinstance(t_args, dict)
-                                        else t_args
+                                        json.dumps(t_args) if isinstance(t_args, dict) else t_args
                                     )
                                     result = await asyncio.wait_for(
                                         call_tool(t_name, args_str), timeout=60
@@ -260,10 +256,7 @@ class SaaSWSClient:
 
         except TimeoutError:
             logger.error("Follow-up analysis timed out after 5 minutes")
-            return (
-                "⚠️ <b>Analysis timed out:</b> The AI took too long to respond. "
-                "Please try again."
-            )
+            return "⚠️ <b>Analysis timed out:</b> The AI took too long to respond. Please try again."
         except Exception as e:
             logger.error("WebSocket connection to SaaS failed (follow-up): %s", e)
             return f"⚠️ Failed to connect to AI Control Plane: {e}"
@@ -273,8 +266,7 @@ class SaaSWSClient:
         try:
             logger.info("Connecting to SaaS Control Plane for smart parsing...")
             async with connect(
-                self.ws_url,
-                additional_headers={"Authorization": f"Bearer {self.token}"}
+                self.ws_url, additional_headers={"Authorization": f"Bearer {self.token}"}
             ) as websocket:
                 # Wait for strategies
                 while True:
@@ -314,8 +306,7 @@ class SaaSWSClient:
         try:
             logger.info("Connecting to SaaS Control Plane to refresh parsing strategies...")
             async with connect(
-                self.ws_url,
-                additional_headers={"Authorization": f"Bearer {self.token}"}
+                self.ws_url, additional_headers={"Authorization": f"Bearer {self.token}"}
             ) as websocket:
                 # The server sends 'update_strategies' immediately after accept
                 raw = await websocket.recv()

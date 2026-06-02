@@ -58,6 +58,7 @@ def clean_telegram_html(text: str) -> str:
     except Exception as exc:
         logger.warning("Failed to parse HTML fragment: %s. Returning escaped text.", exc)
         import html as std_html
+
         return std_html.escape(text)
 
     # 1. First Pass: Handle recursive forbidden tags (code, pre)
