@@ -75,6 +75,16 @@ def mock_settings():
     return s
 
 
+@pytest.fixture
+def mock_context():
+    ctx = MagicMock()
+    ctx.bot.id = 12345
+    ctx.bot.username = "mock_bot"
+    ctx.bot.first_name = "MockBot"
+    ctx.bot.get_me = AsyncMock(return_value=ctx.bot)
+    return ctx
+
+
 # ---------------------------------------------------------------------------
 # _handle_alert_group — follow-up context saving
 # ---------------------------------------------------------------------------
@@ -151,7 +161,9 @@ class TestHandleAlertGroupFollowupContext:
 
 
 class TestFollowupReplyHandler:
-    def _make_update(self, text="покажи CPU", user_id=777, reply_to_id=99, is_bot=False):
+    def _make_update(
+        self, text="покажи CPU", user_id=777, reply_to_id=99, is_bot=False, bot_id=12345
+    ):
         update = MagicMock()
         msg = AsyncMock()
         msg.text = text
@@ -164,6 +176,8 @@ class TestFollowupReplyHandler:
 
         replied = MagicMock()
         replied.message_id = reply_to_id
+        replied.from_user = MagicMock()
+        replied.from_user.id = bot_id
         msg.reply_to_message = replied
 
         indicator = AsyncMock()
@@ -173,7 +187,9 @@ class TestFollowupReplyHandler:
         update.message = msg
         return update
 
-    async def test_happy_path_calls_agent_and_edits_indicator(self, mock_settings, mock_store):
+    async def test_happy_path_calls_agent_and_edits_indicator(
+        self, mock_settings, mock_store, mock_context
+    ):
         update = self._make_update()
         with (
             patch(
@@ -183,12 +199,12 @@ class TestFollowupReplyHandler:
             patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings),
             patch("srebot.bot.telegram.handlers.get_store", AsyncMock(return_value=mock_store)),
         ):
-            await followup_reply_handler(update, MagicMock())
+            await followup_reply_handler(update, mock_context)
 
         mock_fq.assert_called_once()
         update.message.reply_text.assert_called()
 
-    async def test_ignored_when_no_context(self, mock_settings):
+    async def test_ignored_when_no_context(self, mock_settings, mock_context):
         update = self._make_update()
         indicator = update.message.reply_text.return_value
         with (
@@ -198,13 +214,13 @@ class TestFollowupReplyHandler:
             ),
             patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings),
         ):
-            await followup_reply_handler(update, MagicMock())
+            await followup_reply_handler(update, mock_context)
 
         # Should send indicator and then delete it
         update.message.reply_text.assert_called_once()
         indicator.delete.assert_called_once()
 
-    async def test_sends_cooldown_message(self, mock_settings):
+    async def test_sends_cooldown_message(self, mock_settings, mock_context):
         update = self._make_update()
         indicator = update.message.reply_text.return_value
         with (
@@ -214,14 +230,14 @@ class TestFollowupReplyHandler:
             ),
             patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings),
         ):
-            await followup_reply_handler(update, MagicMock())
+            await followup_reply_handler(update, mock_context)
 
         update.message.reply_text.assert_called_once()
         indicator.edit_text.assert_called_once()
         text = indicator.edit_text.call_args[0][0]
         assert "⏳" in text or "wait" in text
 
-    async def test_sends_limit_message(self, mock_settings):
+    async def test_sends_limit_message(self, mock_settings, mock_context):
         update = self._make_update()
         indicator = update.message.reply_text.return_value
         with (
@@ -231,21 +247,21 @@ class TestFollowupReplyHandler:
             ),
             patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings),
         ):
-            await followup_reply_handler(update, MagicMock())
+            await followup_reply_handler(update, mock_context)
 
         update.message.reply_text.assert_called_once()
         indicator.edit_text.assert_called_once()
         text = indicator.edit_text.call_args[0][0]
         assert "🔒" in text or "Limit" in text
 
-    async def test_ignores_bot_messages(self, mock_settings):
+    async def test_ignores_bot_messages(self, mock_settings, mock_context):
         update = self._make_update(is_bot=True)
         with patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings):
-            await followup_reply_handler(update, MagicMock())
+            await followup_reply_handler(update, mock_context)
 
         update.message.reply_text.assert_not_called()
 
-    async def test_ignores_messages_without_reply(self, mock_settings):
+    async def test_ignores_messages_without_reply(self, mock_settings, mock_context):
         update = MagicMock()
         msg = AsyncMock()
         msg.text = "some text"
@@ -253,11 +269,11 @@ class TestFollowupReplyHandler:
         update.message = msg
 
         with patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings):
-            await followup_reply_handler(update, MagicMock())
+            await followup_reply_handler(update, mock_context)
 
         msg.reply_text.assert_not_called()
 
-    async def test_dry_run_logs_instead_of_sending(self, mock_settings):
+    async def test_dry_run_logs_instead_of_sending(self, mock_settings, mock_context):
         mock_settings.dry_run = True
         update = self._make_update()
         with (
@@ -267,6 +283,6 @@ class TestFollowupReplyHandler:
             ),
             patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings),
         ):
-            await followup_reply_handler(update, MagicMock())
+            await followup_reply_handler(update, mock_context)
 
         update.message.reply_text.assert_not_called()

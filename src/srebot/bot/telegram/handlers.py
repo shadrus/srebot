@@ -200,6 +200,25 @@ async def _handle_alert_group(
         )
 
 
+def clean_mentions(text: str, bot_username: str | None, bot_first_name: str | None) -> str:
+    """Remove bot username mentions and display name mentions from the message."""
+    import re
+
+    cleaned = text
+    if bot_username and isinstance(bot_username, str):
+        # Match @bot_username or bot_username (case-insensitive) as a whole word
+        pattern = re.compile(rf"(?i)@?{re.escape(bot_username)}\b")
+        cleaned = pattern.sub("", cleaned)
+    if bot_first_name and isinstance(bot_first_name, str):
+        # Match bot_first_name (case-insensitive) as a whole word
+        pattern = re.compile(rf"(?i)\b{re.escape(bot_first_name)}\b")
+        cleaned = pattern.sub("", cleaned)
+
+    # Strip any leading/trailing commas, colons, semicolons, and spaces
+    cleaned = re.sub(r"^[,\s:;?]+|[,\s:;?]+$", "", cleaned).strip()
+    return cleaned
+
+
 async def followup_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Handler for replies and mentions in the bot's group thread.
@@ -215,16 +234,22 @@ async def followup_reply_handler(update: Update, context: ContextTypes.DEFAULT_T
     if msg.from_user and msg.from_user.is_bot:
         return
 
+    bot_id = context.bot.id
     bot_username = context.bot.username
     bot_first_name = None
     try:
         bot_info = await context.bot.get_me()
+        bot_id = bot_info.id
         bot_username = bot_info.username
         bot_first_name = bot_info.first_name
     except Exception as e:
         logger.warning("Could not fetch bot details: %s", e)
 
-    is_reply = msg.reply_to_message is not None
+    is_reply = False
+    if msg.reply_to_message is not None:
+        if msg.reply_to_message.from_user and msg.reply_to_message.from_user.id == bot_id:
+            is_reply = True
+
     is_mention = False
     if bot_username and f"@{bot_username}" in msg.text:
         is_mention = True
@@ -285,9 +310,18 @@ async def followup_reply_handler(update: Update, context: ContextTypes.DEFAULT_T
                 parts.append(user.last_name)
             user_display_name = " ".join(p for p in parts if p)
 
+    cleaned_question = clean_mentions(question, bot_username, bot_first_name)
+    if not cleaned_question:
+        if indicator:
+            try:
+                await indicator.delete()
+            except Exception as exc:
+                logger.warning("Could not delete follow-up indicator: %s", exc)
+        return
+
     answer, new_incident_id, rejection = await handle_followup_question(
         reply_to_id=reply_to_id,
-        question=question,
+        question=cleaned_question,
         user_id=user_id,
         chat_id=chat_id,
         user_display_name=user_display_name,

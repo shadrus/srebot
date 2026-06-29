@@ -331,3 +331,18 @@ class TestChannelPostHandler:
         with patch("srebot.bot.telegram.handlers.process_alert_text", AsyncMock()) as mock_proc:
             await channel_post_handler(update, MagicMock())
             mock_proc.assert_called_once_with(FIRING_TEXT, _handle_alert_group, update.channel_post)
+
+
+def test_clean_mentions():
+    from srebot.bot.telegram.handlers import clean_mentions
+
+    username = "Uniqueuly_brandbot"
+    first_name = "Uniqueuly.brandbot"
+
+    assert (
+        clean_mentions("@Uniqueuly_brandbot есть в ифре какие проблемы?", username, first_name)
+        == "есть в ифре какие проблемы"
+    )
+    assert clean_mentions("Uniqueuly.brandbot, привет!", username, first_name) == "привет!"
+    assert clean_mentions("Как дела?", username, first_name) == "Как дела"
+    assert clean_mentions("@Uniqueuly_brandbot", username, first_name) == ""
