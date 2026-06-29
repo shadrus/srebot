@@ -77,7 +77,8 @@ class AlertAnalysisAgent:
         alert_data: list[dict],
         allowed_servers: list[str] | None = None,
         parent_incident_id: str | None = None,
-    ) -> str:
+        user_name: str | None = None,
+    ) -> tuple[str, str | None]:
         """
         Send a follow-up question to the SaaS backend with previous RCA as context.
 
@@ -87,12 +88,14 @@ class AlertAnalysisAgent:
             alert_data: Original alert dicts for tool routing.
             allowed_servers: MCP server names allowed for this cluster.
                 If None, all registered servers are used.
+            parent_incident_id: ID of the parent incident.
+            user_name: Username or display name of the user asking the question.
 
         Returns:
-            The bot's follow-up answer.
+            Tuple of (answer, new_incident_id).
         """
         if not self._token:
-            return "⚠️ Cannot answer: SAAS_AGENT_TOKEN is not configured."
+            return "⚠️ Cannot answer: SAAS_AGENT_TOKEN is not configured.", None
 
         tools_schema = get_tools_schema(allowed_servers=allowed_servers)
         client = SaaSWSClient(ws_url=self._ws_url, token=self._token)
@@ -104,6 +107,7 @@ class AlertAnalysisAgent:
             tools_schema=tools_schema,
             parent_incident_id=parent_incident_id,
             response_language=self._response_language,
+            user_name=user_name,
         )
 
     async def parse_raw_text(self, text: str) -> list[Alert]:

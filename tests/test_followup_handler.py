@@ -48,8 +48,8 @@ def mock_store():
 @pytest.fixture
 def mock_agent():
     agent = MagicMock()
-    agent.analyze = AsyncMock(return_value="<b>Analysis result</b>")
-    agent.followup = AsyncMock(return_value="Follow-up answer")
+    agent.analyze = AsyncMock(return_value=("<b>Analysis result</b>", "incident123"))
+    agent.followup = AsyncMock(return_value=("Follow-up answer", "incident456"))
     return agent
 
 
@@ -109,7 +109,9 @@ class TestHandleAlertGroupFollowupContext:
         ):
             await _handle_alert_group("fp123", [alert], mock_message)
 
-        mock_store.register_bot_message.assert_called_once_with(99, "fp123")
+        mock_store.register_bot_message.assert_called_once_with(
+            99, "fp123", incident_id="incident123"
+        )
 
     async def test_no_followup_context_if_resolved_during_analysis(
         self, mock_store, mock_agent, mock_message, mock_settings
@@ -171,14 +173,15 @@ class TestFollowupReplyHandler:
         update.message = msg
         return update
 
-    async def test_happy_path_calls_agent_and_edits_indicator(self, mock_settings):
+    async def test_happy_path_calls_agent_and_edits_indicator(self, mock_settings, mock_store):
         update = self._make_update()
         with (
             patch(
                 "srebot.bot.telegram.handlers.handle_followup_question",
-                AsyncMock(return_value=("Follow-up answer", None)),
+                AsyncMock(return_value=("Follow-up answer", "incident456", None)),
             ) as mock_fq,
             patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings),
+            patch("srebot.bot.telegram.handlers.get_store", AsyncMock(return_value=mock_store)),
         ):
             await followup_reply_handler(update, MagicMock())
 
@@ -191,7 +194,7 @@ class TestFollowupReplyHandler:
         with (
             patch(
                 "srebot.bot.telegram.handlers.handle_followup_question",
-                AsyncMock(return_value=("", RejectionReason.NO_CONTEXT)),
+                AsyncMock(return_value=("", None, RejectionReason.NO_CONTEXT)),
             ),
             patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings),
         ):
@@ -207,7 +210,7 @@ class TestFollowupReplyHandler:
         with (
             patch(
                 "srebot.bot.telegram.handlers.handle_followup_question",
-                AsyncMock(return_value=("", RejectionReason.COOLDOWN)),
+                AsyncMock(return_value=("", None, RejectionReason.COOLDOWN)),
             ),
             patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings),
         ):
@@ -224,7 +227,7 @@ class TestFollowupReplyHandler:
         with (
             patch(
                 "srebot.bot.telegram.handlers.handle_followup_question",
-                AsyncMock(return_value=("", RejectionReason.LIMIT_REACHED)),
+                AsyncMock(return_value=("", None, RejectionReason.LIMIT_REACHED)),
             ),
             patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings),
         ):
@@ -260,7 +263,7 @@ class TestFollowupReplyHandler:
         with (
             patch(
                 "srebot.bot.telegram.handlers.handle_followup_question",
-                AsyncMock(return_value=("Follow-up answer", None)),
+                AsyncMock(return_value=("Follow-up answer", "incident456", None)),
             ),
             patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings),
         ):

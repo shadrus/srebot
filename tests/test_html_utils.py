@@ -9,6 +9,7 @@ def test_markdown_to_telegram_bold():
     assert "<strong>bold</strong>" in result or "<b>bold</b>" in result
     assert "<em>italic</em>" in result or "<i>italic</i>" in result
 
+
 def test_markdown_to_telegram_headers():
     text = "# Header 1\n## Header 2"
     result = markdown_to_telegram_html(text)
@@ -18,10 +19,12 @@ def test_markdown_to_telegram_headers():
     assert "<h1>" not in result
     assert "<h2>" not in result
 
+
 def test_markdown_to_telegram_code():
     text = "Check `api-server`"
     result = markdown_to_telegram_html(text)
     assert "<code>api-server</code>" in result
+
 
 def test_markdown_to_telegram_fenced_code():
     text = "```\nlogs\n```"
@@ -31,12 +34,14 @@ def test_markdown_to_telegram_fenced_code():
     # Telegram: <pre> is fine, <code> is fine.
     assert "<pre>" in result
 
+
 def test_markdown_nested_in_code_fix():
     # LLM outputting tags inside code block (very common mistake)
     text = "Result: `<b>Forbidden</b>`"
     result = markdown_to_telegram_html(text)
     # html_utils.py should ensure the <b> is escaped inside <code>
     assert "<code>&lt;b&gt;Forbidden&lt;/b&gt;</code>" in result
+
 
 def test_stray_angle_brackets_markdown():
     text = "If x < 5 or y > 10"

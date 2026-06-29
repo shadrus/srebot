@@ -79,15 +79,22 @@ class TestFollowupContext:
 class TestBotMessageIndex:
     async def test_register_bot_message_sets_key(self, store, mock_redis, mock_settings):
         with patch("srebot.state.store.get_settings", return_value=mock_settings):
-            await store.register_bot_message(99, "fp1")
+            await store.register_bot_message(99, "fp1", incident_id="inc123")
 
         mock_redis.set.assert_called_once()
         call_args = mock_redis.set.call_args
         assert call_args[0][0] == "followup:bymsid:99"
-        assert call_args[0][1] == "fp1"
+        assert json.loads(call_args[0][1]) == {"fingerprint": "fp1", "incident_id": "inc123"}
         assert call_args[1]["ex"] == 3600
 
     async def test_get_fp_by_message_id_returns_fingerprint(self, store, mock_redis):
+        # New JSON format
+        mock_redis.get.return_value = json.dumps({"fingerprint": "fp1", "incident_id": "inc123"})
+        result = await store.get_fp_by_message_id(99)
+        assert result == "fp1"
+
+    async def test_get_fp_by_message_id_fallback_for_legacy_string(self, store, mock_redis):
+        # Legacy plain string format
         mock_redis.get.return_value = "fp1"
         result = await store.get_fp_by_message_id(99)
         assert result == "fp1"

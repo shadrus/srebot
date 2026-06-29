@@ -131,23 +131,47 @@ class AlertStore:
         except json.JSONDecodeError, TypeError:
             return None
 
-    async def register_bot_message(self, message_id: int | str, fingerprint: str) -> None:
+    async def register_bot_message(
+        self, message_id: int | str, fingerprint: str, incident_id: str | None = None
+    ) -> None:
         """
-        Store a reverse index from bot message ID to alert group fingerprint.
+        Store a reverse index from bot message ID to alert group fingerprint and incident ID.
 
-        Used to detect when a user replies to a bot RCA message.
+        Used to detect when a user replies to a bot message in a conversation.
 
         Args:
-            message_id: Telegram/Discord/Slack message ID of the bot's RCA reply.
+            message_id: Message ID of the bot's reply.
             fingerprint: Alert group fingerprint to associate with this message.
+            incident_id: ID of the backend incident log.
         """
         settings = get_settings()
+        payload = json.dumps({"fingerprint": fingerprint, "incident_id": incident_id})
         await self._redis.set(
             f"followup:bymsid:{message_id}",
-            fingerprint,
+            payload,
             ex=settings.followup_ttl,
         )
-        logger.debug("Registered bot message %s → %s", message_id, fingerprint)
+        logger.debug(
+            "Registered bot message %s → fp=%s, inc=%s",
+            message_id,
+            fingerprint,
+            incident_id,
+        )
+
+    async def get_bot_message_context(self, message_id: int | str) -> dict | None:
+        """
+        Retrieve context (fingerprint and incident_id) by bot message ID.
+        """
+        value = await self._redis.get(f"followup:bymsid:{message_id}")
+        if not value:
+            return None
+        try:
+            if value.startswith("{"):
+                return json.loads(value)
+        except Exception:
+            pass
+        # Fallback for legacy plain fingerprint strings in Redis
+        return {"fingerprint": value, "incident_id": None}
 
     async def get_fp_by_message_id(self, message_id: int | str) -> str | None:
         """
@@ -159,8 +183,47 @@ class AlertStore:
         Returns:
             Alert group fingerprint, or None if not found / expired.
         """
-        value = await self._redis.get(f"followup:bymsid:{message_id}")
-        return value  # already str (decode_responses=True)
+        ctx = await self.get_bot_message_context(message_id)
+        return ctx["fingerprint"] if ctx else None
+
+    async def set_last_active_incident(self, chat_id: str | int, fingerprint: str) -> None:
+        """
+        Store the last active incident fingerprint for a chat.
+        """
+        settings = get_settings()
+        await self._redis.set(
+            f"last_incident:{chat_id}",
+            fingerprint,
+            ex=settings.followup_ttl,
+        )
+        logger.debug("Set last active incident for chat %s to %s", chat_id, fingerprint)
+
+    async def get_last_active_incident(self, chat_id: str | int) -> str | None:
+        """
+        Get the last active incident fingerprint for a chat.
+        """
+        return await self._redis.get(f"last_incident:{chat_id}")
+
+    async def update_followup_context_incident_id(self, fingerprint: str, incident_id: str) -> None:
+        """
+        Update the incident_id inside the followup context for a fingerprint.
+        """
+        key = f"alert:followup:{fingerprint}"
+        value = await self._redis.get(key)
+        if not value:
+            return
+        try:
+            data = json.loads(value)
+            data["incident_id"] = incident_id
+            ttl = await self._redis.ttl(key)
+            await self._redis.set(key, json.dumps(data), ex=max(ttl, 1))
+            logger.debug(
+                "Updated followup context for %s with incident_id %s",
+                fingerprint,
+                incident_id,
+            )
+        except Exception as e:
+            logger.warning("Failed to update followup context incident_id: %s", e)
 
     async def increment_followup_turns(self, fingerprint: str) -> int:
         """

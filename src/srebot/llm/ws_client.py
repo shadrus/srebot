@@ -145,7 +145,8 @@ class SaaSWSClient:
         tools_schema: list[dict],
         parent_incident_id: str | None = None,
         response_language: str = "English",
-    ) -> str:
+        user_name: str | None = None,
+    ) -> tuple[str, str | None]:
         """
         Send a follow-up question to the SaaS Control Plane with RCA context.
 
@@ -155,6 +156,7 @@ class SaaSWSClient:
             alert_data: Original alert data dict (for tool routing).
             tools_schema: List of OpenAI tool schemas allowed for this cluster.
             response_language: Language for the LLM response.
+            user_name: Username or display name of the user asking the question.
 
         Returns:
             The bot's follow-up answer as a string.
@@ -190,6 +192,7 @@ class SaaSWSClient:
                         "tools": tools_schema,
                         "parent_incident_id": parent_incident_id,
                         "response_language": response_language,
+                        "user_name": user_name,
                     }
                     await websocket.send(json.dumps(payload))
 
@@ -201,12 +204,13 @@ class SaaSWSClient:
 
                         if event == "final_analysis":
                             content = response.get("text", "")
+                            incident_id = response.get("incident_id")
                             if used_tools:
                                 tools_str = ", ".join(
                                     f"<code>{t}</code>" for t in sorted(used_tools)
                                 )
                                 content += f"\n\n<b>🛠 Tools used:</b> {tools_str}"
-                            return content
+                            return content, incident_id
 
                         elif event == "execute_tools":
                             tools = response.get("tools", [])
@@ -246,7 +250,7 @@ class SaaSWSClient:
                         elif event == "error":
                             msg = response.get("message")
                             logger.error("SaaS Error (follow-up): %s", msg)
-                            return f"⚠️ Control Plane Error: {msg}"
+                            return f"⚠️ Control Plane Error: {msg}", None
 
                         elif await self._handle_server_event(response):
                             continue
@@ -256,10 +260,13 @@ class SaaSWSClient:
 
         except TimeoutError:
             logger.error("Follow-up analysis timed out after 5 minutes")
-            return "⚠️ <b>Analysis timed out:</b> The AI took too long to respond. Please try again."
+            return (
+                "⚠️ <b>Analysis timed out:</b> The AI took too long to respond. Please try again.",
+                None,
+            )
         except Exception as e:
             logger.error("WebSocket connection to SaaS failed (follow-up): %s", e)
-            return f"⚠️ Failed to connect to AI Control Plane: {e}"
+            return f"⚠️ Failed to connect to AI Control Plane: {e}", None
 
     async def extract_alerts(self, text: str) -> list[dict[str, Any]]:
         """Request the SaaS Control Plane to parse raw text into structured Alert objects."""

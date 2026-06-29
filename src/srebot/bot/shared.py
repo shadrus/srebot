@@ -122,25 +122,28 @@ async def process_alert_text(
 
 
 async def handle_followup_question(
-    reply_to_id: str,
+    reply_to_id: str | None,
     question: str,
     user_id: str,
+    chat_id: str | None = None,
     allowed_servers: list[str] | None = None,
-) -> tuple[str, RejectionReason | None]:
+    user_display_name: str | None = None,
+) -> tuple[str, str | None, RejectionReason | None]:
     """
     Common follow-up processing pipeline shared by all platform integrations.
 
-    Validates the reply, enforces rate limits and turn caps, then calls the LLM
-    with the previous RCA context.
+    Validates the reply or mention, enforces rate limits and turn caps, then calls the LLM
+    with the previous RCA context or initiates a general query.
 
     Args:
-        reply_to_id: ID of the message being replied to (str for cross-platform).
+        reply_to_id: ID of the message being replied to, or None if direct mention.
         question: The engineer's follow-up question text.
         user_id: Platform user identifier (for rate limiting).
+        chat_id: The chat identifier (to resolve active incident context for mentions).
         allowed_servers: MCP server names allowed for this cluster (passed to agent).
 
     Returns:
-        Tuple of (answer, rejection_reason). If rejection_reason is not None,
+        Tuple of (answer, new_incident_id, rejection_reason). If rejection_reason is not None,
         answer is an empty string and the caller should surface a platform-specific
         user-facing message based on the rejection reason.
     """
@@ -150,37 +153,65 @@ async def handle_followup_question(
     store = await get_store()
     settings = get_settings()
 
-    fp = await store.get_fp_by_message_id(reply_to_id)
-    if not fp:
-        logger.debug("Follow-up: no context found for message_id=%s — ignoring", reply_to_id)
-        return "", RejectionReason.NO_CONTEXT
-
     in_cooldown = await store.check_and_set_user_cooldown(user_id)
     if in_cooldown:
         logger.debug("Follow-up: user %s is in cooldown", user_id)
-        return "", RejectionReason.COOLDOWN
+        return "", None, RejectionReason.COOLDOWN
 
-    turns = await store.increment_followup_turns(fp)
-    if turns > settings.followup_max_turns:
-        logger.info(
-            "Follow-up: max turns (%d) exceeded for group %s (turn %d)",
-            settings.followup_max_turns,
-            fp,
-            turns,
-        )
-        return "", RejectionReason.LIMIT_REACHED
+    fp = None
+    parent_incident_id = None
+    rca_text = ""
+    alert_data = []
 
-    ctx = await store.get_followup_context(fp)
-    if not ctx:
-        logger.debug("Follow-up: context expired for group %s", fp)
-        return "", RejectionReason.NO_CONTEXT
+    if reply_to_id:
+        msg_ctx = await store.get_bot_message_context(reply_to_id)
+        if msg_ctx:
+            fp = msg_ctx["fingerprint"]
+            parent_incident_id = msg_ctx["incident_id"]
+
+    if not fp and chat_id:
+        fp = await store.get_last_active_incident(chat_id)
+        if fp:
+            ctx = await store.get_followup_context(fp)
+            if ctx:
+                parent_incident_id = ctx.get("incident_id")
+
+    if fp and fp != "general_query":
+        # Check turns and context expiration for actual alert groups
+        turns = await store.increment_followup_turns(fp)
+        if turns > settings.followup_max_turns:
+            logger.info(
+                "Follow-up: max turns (%d) exceeded for group %s (turn %d)",
+                settings.followup_max_turns,
+                fp,
+                turns,
+            )
+            return "", None, RejectionReason.LIMIT_REACHED
+
+        ctx = await store.get_followup_context(fp)
+        if not ctx:
+            logger.debug("Follow-up: context expired for group %s", fp)
+            return "", None, RejectionReason.NO_CONTEXT
+        rca_text = ctx["rca_text"]
+        alert_data = ctx["alert_data"]
+    else:
+        # General query session: no active incident context
+        fp = "general_query"
+        rca_text = ""
+        alert_data = []
+        allowed_servers = None  # General queries can use all tools
 
     agent = get_agent()
-    answer = await agent.followup(
+    answer, new_incident_id = await agent.followup(
         question=question,
-        rca_text=ctx["rca_text"],
-        alert_data=ctx["alert_data"],
+        rca_text=rca_text,
+        alert_data=alert_data,
         allowed_servers=allowed_servers,
-        parent_incident_id=ctx.get("incident_id"),
+        parent_incident_id=parent_incident_id,
+        user_name=user_display_name,
     )
-    return answer, None
+
+    if new_incident_id and fp != "general_query":
+        await store.update_followup_context_incident_id(fp, new_incident_id)
+
+    return answer, new_incident_id, None

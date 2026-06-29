@@ -190,7 +190,8 @@ async def _handle_alert_group(
             for a in alerts
         ]
         await store.save_followup_context(group_fp, analysis, alert_data, incident_id=incident_id)
-        await store.register_bot_message(placeholder.message_id, group_fp)
+        await store.register_bot_message(placeholder.message_id, group_fp, incident_id=incident_id)
+        await store.set_last_active_incident(str(source_msg.chat_id), group_fp)
     else:
         logger.info(
             "Alert %s was %s during analysis. Not marking as firing.",
@@ -201,21 +202,41 @@ async def _handle_alert_group(
 
 async def followup_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Handler for reply messages in the bot's group thread.
+    Handler for replies and mentions in the bot's group thread.
 
-    Detects replies to bot RCA messages and routes them as follow-up
-    questions to the SaaS backend with the original incident context.
+    Detects replies to bot RCA messages or direct bot mentions and routes them as follow-up
+    questions to the SaaS backend with the correct incident context.
     """
     msg = update.message or update.channel_post
-    if not msg or not msg.text or not msg.reply_to_message:
+    if not msg or not msg.text:
         return
 
     # Ignore messages from bots (including ourselves)
     if msg.from_user and msg.from_user.is_bot:
         return
 
+    bot_username = context.bot.username
+    bot_first_name = None
+    try:
+        bot_info = await context.bot.get_me()
+        bot_username = bot_info.username
+        bot_first_name = bot_info.first_name
+    except Exception as e:
+        logger.warning("Could not fetch bot details: %s", e)
+
+    is_reply = msg.reply_to_message is not None
+    is_mention = False
+    if bot_username and f"@{bot_username}" in msg.text:
+        is_mention = True
+    elif bot_first_name and bot_first_name.lower() in msg.text.lower():
+        is_mention = True
+
+    if not is_reply and not is_mention:
+        return
+
     dry_run = get_settings().dry_run
-    reply_to_id = str(msg.reply_to_message.message_id)
+    reply_to_id = str(msg.reply_to_message.message_id) if is_reply else None
+    chat_id = str(msg.chat_id)
     user_id = str(msg.from_user.id) if getattr(msg, "from_user", None) else f"channel_{msg.chat_id}"
     question = msg.text.strip()
 
@@ -223,22 +244,22 @@ async def followup_reply_handler(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     # Check for commands
-    from srebot.bot.commands import extract_chat_id, handle_command, is_command_message
+    from srebot.bot.commands import handle_command, is_command_message
 
     if is_command_message(question):
-        chat_id = extract_chat_id(msg)
-        if chat_id:
-            response = await handle_command(
-                question, reply_to_id, chat_id, bot_username=context.bot.username
-            )
-            if response:
-                await _reply(msg, markdown_to_telegram_html(response), dry_run)
-                return
+        cmd_reply_to_id = reply_to_id or (str(msg.message_id) if is_reply else None)
+        response = await handle_command(
+            question, cmd_reply_to_id, chat_id, bot_username=context.bot.username
+        )
+        if response:
+            await _reply(msg, markdown_to_telegram_html(response), dry_run)
+            return
 
     logger.debug(
-        "Follow-up reply from user=%s to message=%s: %.80s",
+        "Follow-up reply/mention from user=%s (reply_to=%s, mention=%s): %.80s",
         user_id,
         reply_to_id,
+        is_mention,
         question,
     )
 
@@ -253,15 +274,28 @@ async def followup_reply_handler(update: Update, context: ContextTypes.DEFAULT_T
         except Exception as exc:
             logger.warning("Could not send follow-up typing indicator: %s", exc)
 
-    answer, rejection = await handle_followup_question(
+    user_display_name = None
+    if getattr(msg, "from_user", None):
+        user = msg.from_user
+        if user.username:
+            user_display_name = f"@{user.username}"
+        else:
+            parts = [user.first_name]
+            if user.last_name:
+                parts.append(user.last_name)
+            user_display_name = " ".join(p for p in parts if p)
+
+    answer, new_incident_id, rejection = await handle_followup_question(
         reply_to_id=reply_to_id,
         question=question,
         user_id=user_id,
+        chat_id=chat_id,
+        user_display_name=user_display_name,
     )
 
     if rejection is not None:
         if rejection == RejectionReason.NO_CONTEXT:
-            # Silently ignore — reply is not to a bot RCA message
+            # Silently ignore
             if indicator:
                 try:
                     await indicator.delete()
@@ -298,14 +332,15 @@ async def followup_reply_handler(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     # Success path
+    new_bot_msg = None
     if indicator:
         try:
             safe_answer = markdown_to_telegram_html(answer)
-            await indicator.edit_text(safe_answer, parse_mode=ParseMode.HTML)
+            new_bot_msg = await indicator.edit_text(safe_answer, parse_mode=ParseMode.HTML)
         except Exception as exc:
             logger.warning("Could not edit follow-up answer: %s", exc)
             try:
-                await msg.reply_text(
+                new_bot_msg = await msg.reply_text(
                     markdown_to_telegram_html(answer),
                     parse_mode=ParseMode.HTML,
                     reply_to_message_id=msg.message_id,
@@ -314,13 +349,32 @@ async def followup_reply_handler(update: Update, context: ContextTypes.DEFAULT_T
                 logger.error("Total failure sending follow-up answer: %s", exc2)
     else:
         try:
-            await msg.reply_text(
+            new_bot_msg = await msg.reply_text(
                 markdown_to_telegram_html(answer),
                 parse_mode=ParseMode.HTML,
                 reply_to_message_id=msg.message_id,
             )
         except Exception as exc:
             logger.error("Failure sending follow-up answer (no indicator): %s", exc)
+
+    final_msg_id = None
+    if new_bot_msg and hasattr(new_bot_msg, "message_id"):
+        final_msg_id = new_bot_msg.message_id
+    elif indicator:
+        final_msg_id = indicator.message_id
+
+    if final_msg_id and new_incident_id:
+        store = await get_store()
+        fingerprint = None
+        if reply_to_id:
+            fingerprint = await store.get_fp_by_message_id(reply_to_id)
+        if not fingerprint and chat_id:
+            fingerprint = await store.get_last_active_incident(chat_id)
+        if not fingerprint:
+            fingerprint = "general_query"
+
+        await store.register_bot_message(final_msg_id, fingerprint, incident_id=new_incident_id)
+        await store.set_last_active_incident(chat_id, fingerprint)
 
 
 async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -336,6 +390,25 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # Ignore replies (handled by followup_reply_handler in a different group)
     if msg.reply_to_message:
+        return
+
+    # Ignore direct mentions (handled by followup_reply_handler)
+    bot_username = context.bot.username
+    bot_first_name = None
+    try:
+        bot_info = await context.bot.get_me()
+        bot_username = bot_info.username
+        bot_first_name = bot_info.first_name
+    except Exception:
+        pass
+
+    is_mention = False
+    if bot_username and f"@{bot_username}" in msg.text:
+        is_mention = True
+    elif bot_first_name and bot_first_name.lower() in msg.text.lower():
+        is_mention = True
+
+    if is_mention:
         return
 
     logger.debug("Received message %d from chat_id=%d", msg.message_id, msg.chat_id)
