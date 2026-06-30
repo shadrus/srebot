@@ -154,6 +154,50 @@ class TestHandleAlertGroupFollowupContext:
         edited_text = placeholder.edit_text.call_args[0][0]
         assert "1 ч." in edited_text or "1" in edited_text or "1 h." in edited_text
 
+    async def test_ttl_footer_not_added_on_insufficient_balance_english(
+        self, mock_store, mock_agent, mock_message, mock_settings
+    ):
+        alert = _firing_alert()
+        mock_agent.analyze = AsyncMock(
+            return_value=(
+                "⚠️ <b>Insufficient Balance</b>\nYour token balance is empty.",
+                "inc_id",
+            )
+        )
+        with (
+            patch("srebot.bot.telegram.handlers.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.bot.telegram.handlers.get_agent", return_value=mock_agent),
+            patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings),
+        ):
+            await _handle_alert_group("fp123", [alert], mock_message)
+
+        placeholder = mock_message.reply_text.return_value
+        edited_text = placeholder.edit_text.call_args[0][0]
+        assert "Задайте уточняющие вопросы" not in edited_text
+        assert "Ask follow-up questions" not in edited_text
+
+    async def test_ttl_footer_not_added_on_insufficient_balance_russian(
+        self, mock_store, mock_agent, mock_message, mock_settings
+    ):
+        alert = _firing_alert()
+        mock_agent.analyze = AsyncMock(
+            return_value=(
+                "⚠️ <b>Недостаточно баланса</b>\nВаш баланс токенов пуст.",
+                "inc_id",
+            )
+        )
+        with (
+            patch("srebot.bot.telegram.handlers.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.bot.telegram.handlers.get_agent", return_value=mock_agent),
+            patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings),
+        ):
+            await _handle_alert_group("fp123", [alert], mock_message)
+
+        placeholder = mock_message.reply_text.return_value
+        edited_text = placeholder.edit_text.call_args[0][0]
+        assert "Задайте уточняющие вопросы" not in edited_text
+        assert "Ask follow-up questions" not in edited_text
+
 
 # ---------------------------------------------------------------------------
 # followup_reply_handler — happy path

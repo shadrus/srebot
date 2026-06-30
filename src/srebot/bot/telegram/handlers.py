@@ -142,8 +142,12 @@ async def _handle_alert_group(
     safe_analysis = markdown_to_telegram_html(analysis)
 
     # Append TTL footer so engineers know how long the follow-up window is open
-    ttl_hours = get_settings().followup_ttl // 3600
-    safe_analysis += get_msg("ttl_footer").format(hours=ttl_hours)
+    is_billing_error = (
+        "insufficient balance" in analysis.lower() or "недостаточно баланса" in analysis.lower()
+    )
+    if not is_billing_error:
+        ttl_hours = get_settings().followup_ttl // 3600
+        safe_analysis += get_msg("ttl_footer").format(hours=ttl_hours)
 
     try:
         await placeholder.edit_text(safe_analysis, parse_mode=ParseMode.HTML)
