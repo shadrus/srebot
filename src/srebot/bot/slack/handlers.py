@@ -15,6 +15,29 @@ from srebot.state.store import get_store
 logger = logging.getLogger(__name__)
 
 
+MESSAGES = {
+    "Russian": {
+        "analyzing_alerts": "🔍 *Анализирую {count} алерт(ов)…*",
+        "ttl_footer": "\n\n_💬 Задайте уточняющие вопросы в треде к этому сообщению в течение {hours} ч._",  # noqa: E501
+        "analyzing_followup": "🔍 _Анализирую..._",
+        "cooldown": "⏳ _Подождите немного перед следующим вопросом._",
+        "limit_reached": "🔒 _Лимит уточняющих вопросов по этому инциденту исчерпан ({current}/{max})._",  # noqa: E501
+    },
+    "English": {
+        "analyzing_alerts": "🔍 *Analyzing {count} alert(s)…*",
+        "ttl_footer": "\n\n_💬 Ask follow-up questions by replying in this thread within {hours} h._",  # noqa: E501
+        "analyzing_followup": "🔍 _Analyzing..._",
+        "cooldown": "⏳ _Please wait a bit before the next question._",
+        "limit_reached": "🔒 _Limit of follow-up questions for this incident reached ({current}/{max})._",  # noqa: E501
+    },
+}
+
+
+def get_msg(key: str) -> str:
+    lang = get_settings().llm_response_language
+    return MESSAGES.get(lang, MESSAGES["English"]).get(key, "")
+
+
 def _markdown_to_slack(text: str) -> str:
     """
     Convert standard Markdown to Slack mrkdwn format.
@@ -96,8 +119,9 @@ async def _handle_alert_group(
             res = await client.chat_postMessage(
                 channel=channel_id,
                 text=(
-                    f"🔍 *Analyzing {len(alerts)} alert(s)...*\n"
-                    f"`{primary.alertname}` · {primary.cluster} · {primary.labels.get('job', '')}"
+                    get_msg("analyzing_alerts").format(count=len(alerts))
+                    + f"\n`{primary.alertname}` · {primary.cluster} · "
+                    f"{primary.labels.get('job', '')}"
                 ),
             )
             placeholder_ts = res["ts"]
@@ -120,6 +144,14 @@ async def _handle_alert_group(
 
     # Convert Markdown to Slack mrkdwn
     analysis = _markdown_to_slack(analysis)
+
+    # Append TTL footer if not a billing error
+    is_billing_error = (
+        "insufficient balance" in analysis.lower() or "недостаточно баланса" in analysis.lower()
+    )
+    if not is_billing_error:
+        ttl_hours = get_settings().followup_ttl // 3600
+        analysis += get_msg("ttl_footer").format(hours=ttl_hours)
 
     # Check if the alert was resolved while we were analyzing
     current_status = await store.get_status(group_fp)
@@ -166,13 +198,40 @@ async def _handle_alert_group(
             for a in alerts
         ]
         await store.save_followup_context(group_fp, analysis, alert_data, incident_id=incident_id)
-        await store.register_bot_message(str(placeholder_ts), group_fp)
+        await store.register_bot_message(str(placeholder_ts), group_fp, incident_id=incident_id)
+        await store.set_last_active_incident(f"slack:{channel_id}", group_fp)
     else:
         logger.info(
             "Alert %s was %s during analysis. Not marking as firing.",
             group_fp,
             current_status,
         )
+
+
+bot_user_id = None
+
+
+async def get_bot_user_id(client: AsyncWebClient) -> str:
+    """Retrieve and cache the bot's user ID."""
+    global bot_user_id
+    if bot_user_id is None:
+        try:
+            auth_response = await client.auth_test()
+            bot_user_id = auth_response["user_id"]
+        except Exception as exc:
+            logger.warning("Could not fetch Slack bot user ID: %s", exc)
+    return bot_user_id or ""
+
+
+def clean_mentions(text: str, bot_id: str | None) -> str:
+    """Remove bot mentions (e.g. <@U12345>) from the message text."""
+    cleaned = text
+    if bot_id:
+        pattern = re.compile(rf"(?i)<@{re.escape(bot_id)}>")
+        cleaned = pattern.sub("", cleaned)
+    # Strip any leading/trailing commas, colons, semicolons, and spaces
+    cleaned = re.sub(r"^[,\s:;?]+|[,\s:;?]+$", "", cleaned).strip()
+    return cleaned
 
 
 def register_handlers(app: AsyncApp, settings: Settings) -> None:
@@ -202,14 +261,18 @@ def register_handlers(app: AsyncApp, settings: Settings) -> None:
     @app.event("app_mention")
     async def handle_app_mention_events(event: dict, client: AsyncWebClient) -> None:
         """Handler for bot mentions (@srebot)."""
-        await _process_incoming_text(event.get("text", ""), event.get("channel", ""), client)
+        channel_id = event.get("channel", "")
+        if channel_id == settings.slack_channel_id:
+            # Let handle_message_events handle it to avoid duplicate processing
+            return
+        await _process_incoming_text(event.get("text", ""), channel_id, client)
 
     @app.message()
     async def handle_message_events(event: dict, message: dict, client: AsyncWebClient) -> None:
         """
         Handler for all channel messages.
 
-        Filters by configured channel, detects follow-up thread replies,
+        Filters by configured channel, detects follow-up thread replies and direct mentions,
         then falls through to normal alert parsing.
         """
         channel_id = event.get("channel", "")
@@ -224,13 +287,17 @@ def register_handlers(app: AsyncApp, settings: Settings) -> None:
         if not text:
             return
 
-        # Check for commands
+        bot_id = await get_bot_user_id(client)
+        is_mention = bool(bot_id and f"<@{bot_id}>" in text)
+        cleaned_text = clean_mentions(text, bot_id)
+
+        # Check for commands using cleaned text
         from srebot.bot.commands import extract_chat_id, handle_command, is_command_message
 
-        if is_command_message(text):
+        if is_command_message(cleaned_text):
             chat_id = extract_chat_id(channel_id)
             if chat_id:
-                response = await handle_command(text, thread_ts, chat_id)
+                response = await handle_command(cleaned_text, thread_ts, chat_id)
                 if response:
                     if not settings.dry_run:
                         try:
@@ -245,25 +312,80 @@ def register_handlers(app: AsyncApp, settings: Settings) -> None:
                         logger.info("[DRY-RUN] Slack command response:\n%s", response)
                     return
 
-        # --- Follow-up detection: thread replies have thread_ts set ---
-        if thread_ts:
+        # --- Follow-up detection: thread replies or direct mentions ---
+        if thread_ts or is_mention:
             from srebot.bot.shared import RejectionReason, handle_followup_question
 
-            answer, rejection = await handle_followup_question(
+            user_display_name = None
+            if not settings.dry_run:
+                try:
+                    user_info = await client.users_info(user=user_id)
+                    user_data = user_info.get("user") or {}
+                    profile = user_data.get("profile") or {}
+                    user_display_name = (
+                        profile.get("display_name")
+                        or user_data.get("real_name")
+                        or user_data.get("name")
+                    )
+                except Exception as exc:
+                    logger.warning("Could not fetch Slack user info: %s", exc)
+
+            chat_id = f"slack:{channel_id}"
+            reply_to_ts = thread_ts or event.get("ts")
+
+            indicator_ts = None
+            if not settings.dry_run:
+                try:
+                    res = await client.chat_postMessage(
+                        channel=channel_id,
+                        text=get_msg("analyzing_followup"),
+                        thread_ts=reply_to_ts,
+                    )
+                    indicator_ts = res["ts"]
+                except Exception as exc:
+                    logger.warning("Could not send Slack follow-up typing indicator: %s", exc)
+
+            answer, new_incident_id, rejection = await handle_followup_question(
                 reply_to_id=thread_ts,
-                question=text.strip(),
+                question=cleaned_text,
                 user_id=str(user_id),
+                chat_id=chat_id,
+                user_display_name=user_display_name,
             )
 
             if rejection is None:
-                # Successful follow-up — reply in thread and skip alert parsing
+                # Successful follow-up
                 if not settings.dry_run:
                     try:
-                        await client.chat_postMessage(
-                            channel=channel_id,
-                            text=_markdown_to_slack(answer),
-                            thread_ts=thread_ts,
-                        )
+                        final_msg_ts = indicator_ts
+                        if indicator_ts:
+                            await client.chat_update(
+                                channel=channel_id,
+                                ts=indicator_ts,
+                                text=_markdown_to_slack(answer),
+                            )
+                        else:
+                            res = await client.chat_postMessage(
+                                channel=channel_id,
+                                text=_markdown_to_slack(answer),
+                                thread_ts=reply_to_ts,
+                            )
+                            final_msg_ts = res["ts"]
+
+                        if final_msg_ts and new_incident_id:
+                            store = await get_store()
+                            fingerprint = None
+                            if thread_ts:
+                                fingerprint = await store.get_fp_by_message_id(str(thread_ts))
+                            if not fingerprint and chat_id:
+                                fingerprint = await store.get_last_active_incident(chat_id)
+                            if not fingerprint:
+                                fingerprint = "general_query"
+
+                            await store.register_bot_message(
+                                str(final_msg_ts), fingerprint, incident_id=new_incident_id
+                            )
+                            await store.set_last_active_incident(chat_id, fingerprint)
                     except Exception as exc:
                         logger.warning("Could not send Slack follow-up answer: %s", exc)
                 else:
@@ -271,22 +393,41 @@ def register_handlers(app: AsyncApp, settings: Settings) -> None:
                 return
             elif rejection != RejectionReason.NO_CONTEXT:
                 if rejection == RejectionReason.COOLDOWN:
-                    user_msg = "⏳ Please wait a moment before asking another question."
+                    user_msg = get_msg("cooldown")
                 else:
-                    user_msg = (
-                        f"🔒 Follow-up limit reached for this incident "
-                        f"({settings.followup_max_turns}/{settings.followup_max_turns})."
-                    )
+                    max_turns = settings.followup_max_turns
+                    user_msg = get_msg("limit_reached").format(current=max_turns, max=max_turns)
+
                 if not settings.dry_run:
                     try:
-                        await client.chat_postMessage(
-                            channel=channel_id,
-                            text=user_msg,
-                            thread_ts=thread_ts,
-                        )
+                        if indicator_ts:
+                            await client.chat_update(
+                                channel=channel_id,
+                                ts=indicator_ts,
+                                text=user_msg,
+                            )
+                        else:
+                            await client.chat_postMessage(
+                                channel=channel_id,
+                                text=user_msg,
+                                thread_ts=reply_to_ts,
+                            )
                     except Exception as exc:
                         logger.warning("Could not send Slack follow-up rejection: %s", exc)
+                else:
+                    logger.info(
+                        "[DRY-RUN] Slack follow-up rejection (%s): %s",
+                        rejection.value,
+                        user_msg,
+                    )
                 return
-            # RejectionReason.NO_CONTEXT → fall through to normal alert parsing
+            else:
+                # RejectionReason.NO_CONTEXT: delete indicator and fall through to alert parsing
+                if indicator_ts and not settings.dry_run:
+                    try:
+                        await client.chat_delete(channel=channel_id, ts=indicator_ts)
+                    except Exception as exc:
+                        logger.warning("Could not delete Slack follow-up indicator: %s", exc)
 
+        # Fall through to normal alert parsing
         await _process_incoming_text(text, channel_id, client)

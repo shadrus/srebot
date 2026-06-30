@@ -14,6 +14,29 @@ from srebot.state.store import get_store
 logger = logging.getLogger(__name__)
 
 
+MESSAGES = {
+    "Russian": {
+        "analyzing_alerts": "🔍 *Анализирую {count} алерт(ов)…*",
+        "ttl_footer": "\n\n*💬 Задайте уточняющие вопросы ответом на это сообщение в течение {hours} ч.*",  # noqa: E501
+        "analyzing_followup": "*🔍 Анализирую...*",
+        "cooldown": "*⏳ Подождите немного перед следующим вопросом.*",
+        "limit_reached": "*🔒 Лимит уточняющих вопросов по этому инциденту исчерпан ({current}/{max}).*",  # noqa: E501
+    },
+    "English": {
+        "analyzing_alerts": "🔍 *Analyzing {count} alert(s)…*",
+        "ttl_footer": "\n\n*💬 Ask follow-up questions by replying to this message within {hours} h.*",  # noqa: E501
+        "analyzing_followup": "*🔍 Analyzing...*",
+        "cooldown": "*⏳ Please wait a bit before the next question.*",
+        "limit_reached": "*🔒 Limit of follow-up questions for this incident reached ({current}/{max}).*",  # noqa: E501
+    },
+}
+
+
+def get_msg(key: str) -> str:
+    lang = get_settings().llm_response_language
+    return MESSAGES.get(lang, MESSAGES["English"]).get(key, "")
+
+
 async def _handle_alert_group(
     group_fp: str,
     alerts: list[Alert],
@@ -69,7 +92,7 @@ async def _handle_alert_group(
     if not dry_run:
         try:
             placeholder = await message.reply(
-                f"🔍 **Analyzing {len(alerts)} alert(s)**…\n"
+                get_msg("analyzing_alerts").format(count=len(alerts)) + "\n"
                 f"`{primary.alertname}` · {primary.cluster} · {primary.labels.get('job', '')}"
             )
             # Mark as ANALYZING so concurrent RESOLVED messages know we are on it
@@ -92,6 +115,14 @@ async def _handle_alert_group(
         logger.exception("LLM analysis failed for group %s", group_fp)
         analysis = f"⚠️ **Analysis failed:** `{exc}`\nPlease investigate manually."
         incident_id = None
+
+    # Append TTL footer if not a billing error
+    is_billing_error = (
+        "insufficient balance" in analysis.lower() or "недостаточно баланса" in analysis.lower()
+    )
+    if not is_billing_error:
+        ttl_hours = get_settings().followup_ttl // 3600
+        analysis += get_msg("ttl_footer").format(hours=ttl_hours)
 
     # Check if the alert was resolved while we were analyzing
     current_status = await store.get_status(group_fp)
@@ -138,13 +169,31 @@ async def _handle_alert_group(
             for a in alerts
         ]
         await store.save_followup_context(group_fp, analysis, alert_data, incident_id=incident_id)
-        await store.register_bot_message(str(placeholder.id), group_fp)
+        await store.register_bot_message(str(placeholder.id), group_fp, incident_id=incident_id)
+        await store.set_last_active_incident(f"discord:{message.channel.id}", group_fp)
     else:
         logger.info(
             "Alert %s was %s during analysis. Not marking as firing.",
             group_fp,
             current_status,
         )
+
+
+def clean_mentions(text: str, bot_id: int | None, bot_name: str | None) -> str:
+    """Remove bot mentions and name from the message."""
+    import re
+
+    cleaned = text
+    if bot_id:
+        # Match <@ID> or <@!ID>
+        pattern = re.compile(rf"(?i)<@!?{bot_id}>")
+        cleaned = pattern.sub("", cleaned)
+    if bot_name:
+        pattern = re.compile(rf"(?i)\b{re.escape(bot_name)}\b")
+        cleaned = pattern.sub("", cleaned)
+    # Strip any leading/trailing commas, colons, semicolons, and spaces
+    cleaned = re.sub(r"^[,\s:;?]+|[,\s:;?]+$", "", cleaned).strip()
+    return cleaned
 
 
 def register_handlers(bot: commands.Bot, settings: Settings) -> None:
@@ -164,10 +213,16 @@ def register_handlers(bot: commands.Bot, settings: Settings) -> None:
         if not message.content:
             return
 
-        # Check for commands
+        is_reply = message.reference is not None and message.reference.message_id is not None
+        is_mention = bot.user in message.mentions or (
+            bot.user.name.lower() in message.content.lower()
+        )
+        cleaned_text = clean_mentions(message.content, bot.user.id, bot.user.name)
+
+        # Check for commands using cleaned text
         from srebot.bot.commands import extract_chat_id, handle_command, is_command_message
 
-        if is_command_message(message.content):
+        if is_command_message(cleaned_text):
             chat_id = extract_chat_id(message)
             if chat_id:
                 reply_to_id = (
@@ -175,7 +230,7 @@ def register_handlers(bot: commands.Bot, settings: Settings) -> None:
                     if message.reference and message.reference.message_id
                     else None
                 )
-                response = await handle_command(message.content, reply_to_id, chat_id)
+                response = await handle_command(cleaned_text, reply_to_id, chat_id)
                 if response:
                     if not settings.dry_run:
                         try:
@@ -190,25 +245,55 @@ def register_handlers(bot: commands.Bot, settings: Settings) -> None:
 
         logger.debug("Received message %d from channel_id=%d", message.id, message.channel.id)
 
-        # --- Follow-up detection ---
-        if message.reference and message.reference.message_id:
+        # --- Follow-up detection: replies or direct mentions ---
+        if is_reply or is_mention:
             from srebot.bot.shared import RejectionReason, handle_followup_question
 
-            reply_to_id = str(message.reference.message_id)
+            reply_to_id = str(message.reference.message_id) if is_reply else None
             user_id = str(message.author.id)
-            question = message.content.strip()
+            chat_id = f"discord:{message.channel.id}"
+            user_display_name = message.author.display_name or message.author.name
 
-            answer, rejection = await handle_followup_question(
+            indicator = None
+            if not settings.dry_run:
+                try:
+                    indicator = await message.reply(get_msg("analyzing_followup"))
+                except Exception as exc:
+                    logger.warning("Could not send Discord follow-up typing indicator: %s", exc)
+
+            answer, new_incident_id, rejection = await handle_followup_question(
                 reply_to_id=reply_to_id,
-                question=question,
+                question=cleaned_text,
                 user_id=user_id,
+                chat_id=chat_id,
+                user_display_name=user_display_name,
             )
 
             if rejection is None:
-                # Successful follow-up — reply and skip alert parsing
+                # Successful follow-up
                 if not settings.dry_run:
                     try:
-                        await message.reply(answer[:1900] if len(answer) > 1900 else answer)
+                        safe_answer = answer[:1900] if len(answer) > 1900 else answer
+                        final_msg = indicator
+                        if indicator:
+                            await indicator.edit(content=safe_answer)
+                        else:
+                            final_msg = await message.reply(safe_answer)
+
+                        if final_msg and new_incident_id:
+                            store = await get_store()
+                            fingerprint = None
+                            if reply_to_id:
+                                fingerprint = await store.get_fp_by_message_id(reply_to_id)
+                            if not fingerprint and chat_id:
+                                fingerprint = await store.get_last_active_incident(chat_id)
+                            if not fingerprint:
+                                fingerprint = "general_query"
+
+                            await store.register_bot_message(
+                                str(final_msg.id), fingerprint, incident_id=new_incident_id
+                            )
+                            await store.set_last_active_incident(chat_id, fingerprint)
                     except Exception as exc:
                         logger.warning("Could not send Discord follow-up answer: %s", exc)
                 else:
@@ -217,18 +302,33 @@ def register_handlers(bot: commands.Bot, settings: Settings) -> None:
             elif rejection != RejectionReason.NO_CONTEXT:
                 # Cooldown or limit — send user-facing message
                 if rejection == RejectionReason.COOLDOWN:
-                    user_msg = "⏳ Please wait a moment before asking another question."
+                    user_msg = get_msg("cooldown")
                 else:
-                    user_msg = (
-                        f"🔒 Follow-up limit reached for this incident "
-                        f"({settings.followup_max_turns}/{settings.followup_max_turns})."
-                    )
+                    max_turns = settings.followup_max_turns
+                    user_msg = get_msg("limit_reached").format(current=max_turns, max=max_turns)
+
                 if not settings.dry_run:
                     try:
-                        await message.reply(user_msg)
+                        if indicator:
+                            await indicator.edit(content=user_msg)
+                        else:
+                            await message.reply(user_msg)
                     except Exception as exc:
                         logger.warning("Could not send Discord follow-up rejection: %s", exc)
+                else:
+                    logger.info(
+                        "[DRY-RUN] Discord follow-up rejection (%s): %s",
+                        rejection.value,
+                        user_msg,
+                    )
                 return
-            # RejectionReason.NO_CONTEXT → fall through to normal alert parsing
+            else:
+                # RejectionReason.NO_CONTEXT: delete indicator and fall through to alert parsing
+                if indicator and not settings.dry_run:
+                    try:
+                        await indicator.delete()
+                    except Exception as exc:
+                        logger.warning("Could not delete Discord follow-up indicator: %s", exc)
 
+        # Fall through to normal alert parsing
         await process_alert_text(message.content, _handle_alert_group, message)
