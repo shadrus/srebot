@@ -172,7 +172,6 @@ async def handle_followup_question(
                 ctx = await store.get_followup_context(fp)
                 if not ctx:
                     fp = "general_query"
-                    parent_incident_id = None
 
     if not fp and chat_id:
         fp = await store.get_last_active_incident(chat_id)

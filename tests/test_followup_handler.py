@@ -380,7 +380,7 @@ class TestHandleFollowupQuestionDirect:
             rca_text="",
             alert_data=[],
             allowed_servers=None,
-            parent_incident_id=None,
+            parent_incident_id="incident123",
             user_name=None,
         )
 

@@ -394,7 +394,11 @@ def register_handlers(app: AsyncApp, settings: Settings) -> None:
                             if thread_ts:
                                 fingerprint = await store.get_fp_by_message_id(str(thread_ts))
                             if not fingerprint and chat_id:
-                                fingerprint = await store.get_last_active_incident(chat_id)
+                                last_fp = await store.get_last_active_incident(chat_id)
+                                if last_fp:
+                                    ctx = await store.get_followup_context(last_fp)
+                                    if ctx:
+                                        fingerprint = last_fp
                             if not fingerprint:
                                 fingerprint = "general_query"
 
