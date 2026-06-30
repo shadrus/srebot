@@ -272,13 +272,21 @@ async def followup_reply_handler(update: Update, context: ContextTypes.DEFAULT_T
     if not question:
         return
 
+    cleaned_question = clean_mentions(question, bot_username, bot_first_name)
+
     # Check for commands
     from srebot.bot.commands import handle_command, is_command_message
 
+    command_text = None
     if is_command_message(question):
+        command_text = question
+    elif is_command_message(cleaned_question):
+        command_text = cleaned_question
+
+    if command_text:
         cmd_reply_to_id = reply_to_id or (str(msg.message_id) if is_reply else None)
         response = await handle_command(
-            question, cmd_reply_to_id, chat_id, bot_username=context.bot.username
+            command_text, cmd_reply_to_id, chat_id, bot_username=context.bot.username
         )
         if response:
             await _reply(msg, markdown_to_telegram_html(response), dry_run)
@@ -314,7 +322,6 @@ async def followup_reply_handler(update: Update, context: ContextTypes.DEFAULT_T
                 parts.append(user.last_name)
             user_display_name = " ".join(p for p in parts if p)
 
-    cleaned_question = clean_mentions(question, bot_username, bot_first_name)
     if not cleaned_question:
         if indicator:
             try:

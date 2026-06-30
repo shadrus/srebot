@@ -219,10 +219,16 @@ def register_handlers(bot: commands.Bot, settings: Settings) -> None:
         )
         cleaned_text = clean_mentions(message.content, bot.user.id, bot.user.name)
 
-        # Check for commands using cleaned text
+        # Check for commands using raw content first (to support e.g. /mute@srebot)
         from srebot.bot.commands import extract_chat_id, handle_command, is_command_message
 
-        if is_command_message(cleaned_text):
+        command_text = None
+        if is_command_message(message.content):
+            command_text = message.content
+        elif is_command_message(cleaned_text):
+            command_text = cleaned_text
+
+        if command_text:
             chat_id = extract_chat_id(message)
             if chat_id:
                 reply_to_id = (
@@ -230,7 +236,9 @@ def register_handlers(bot: commands.Bot, settings: Settings) -> None:
                     if message.reference and message.reference.message_id
                     else None
                 )
-                response = await handle_command(cleaned_text, reply_to_id, chat_id)
+                response = await handle_command(
+                    command_text, reply_to_id, chat_id, bot_username=bot.user.name
+                )
                 if response:
                     if not settings.dry_run:
                         try:

@@ -196,6 +196,58 @@ class TestSlackHandlers:
         text = client.chat_update.call_args[1]["text"]
         assert "wait" in text or "Подождите" in text
 
+    async def test_slack_message_handler_command_srebot(self, mock_store, mock_settings):
+        app = MagicMock()
+        slack_register_handlers(app, mock_settings)
+        client = AsyncMock()
+        client.auth_test = AsyncMock(return_value={"user_id": "U_BOT", "user": "srebot"})
+
+        event = {"channel": "C_SLACK", "ts": "12345.6789", "thread_ts": None, "user": "U_USER"}
+        message = {"text": "/mute@srebot 1h", "user": "U_USER"}
+
+        with (
+            patch("srebot.bot.slack.handlers.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.bot.slack.handlers.get_settings", return_value=mock_settings),
+            patch(
+                "srebot.bot.commands.handle_command", AsyncMock(return_value="Muted globally")
+            ) as mock_hc,
+        ):
+            message_decorator = app.message()
+            handler_func = message_decorator.call_args[0][0]
+            await handler_func(event, message, client)
+
+        mock_hc.assert_called_once_with(
+            "/mute@srebot 1h", None, "slack:C_SLACK", bot_username="srebot"
+        )
+        client.chat_postMessage.assert_called_once_with(
+            channel="C_SLACK",
+            text="Muted globally",
+            thread_ts=None,
+        )
+
+    async def test_slack_message_handler_command_otherbot(self, mock_store, mock_settings):
+        app = MagicMock()
+        slack_register_handlers(app, mock_settings)
+        client = AsyncMock()
+        client.auth_test = AsyncMock(return_value={"user_id": "U_BOT", "user": "srebot"})
+
+        event = {"channel": "C_SLACK", "ts": "12345.6789", "thread_ts": None, "user": "U_USER"}
+        message = {"text": "/mute@otherbot 1h", "user": "U_USER"}
+
+        with (
+            patch("srebot.bot.slack.handlers.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.bot.slack.handlers.get_settings", return_value=mock_settings),
+            patch("srebot.bot.commands.handle_command", AsyncMock(return_value=None)) as mock_hc,
+        ):
+            message_decorator = app.message()
+            handler_func = message_decorator.call_args[0][0]
+            await handler_func(event, message, client)
+
+        mock_hc.assert_called_once_with(
+            "/mute@otherbot 1h", None, "slack:C_SLACK", bot_username="srebot"
+        )
+        client.chat_postMessage.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Discord Handler Tests
@@ -286,3 +338,61 @@ class TestDiscordHandlers:
         mock_store.register_bot_message.assert_called_once_with(
             "8888", "general_query", incident_id="incident-888"
         )
+
+    async def test_discord_on_message_command_srebot(self, mock_store, mock_settings):
+        bot = MagicMock()
+        bot.user.id = 123456
+        bot.user.name = "srebot"
+        discord_register_handlers(bot, mock_settings)
+        on_message_func = bot.event.call_args_list[0][0][0]
+
+        message = AsyncMock()
+        message.author = MagicMock()
+        message.author.id = 777
+        message.channel.id = 9999
+        message.content = "/mute@srebot 1h"
+        message.reference = None
+        if hasattr(message, "chat_id"):
+            del message.chat_id
+
+        with (
+            patch("srebot.bot.discord.handlers.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.bot.discord.handlers.get_settings", return_value=mock_settings),
+            patch(
+                "srebot.bot.commands.handle_command", AsyncMock(return_value="Muted globally")
+            ) as mock_hc,
+        ):
+            await on_message_func(message)
+
+        mock_hc.assert_called_once_with(
+            "/mute@srebot 1h", None, "discord:9999", bot_username="srebot"
+        )
+        message.reply.assert_called_once_with("Muted globally")
+
+    async def test_discord_on_message_command_otherbot(self, mock_store, mock_settings):
+        bot = MagicMock()
+        bot.user.id = 123456
+        bot.user.name = "srebot"
+        discord_register_handlers(bot, mock_settings)
+        on_message_func = bot.event.call_args_list[0][0][0]
+
+        message = AsyncMock()
+        message.author = MagicMock()
+        message.author.id = 777
+        message.channel.id = 9999
+        message.content = "/mute@otherbot 1h"
+        message.reference = None
+        if hasattr(message, "chat_id"):
+            del message.chat_id
+
+        with (
+            patch("srebot.bot.discord.handlers.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.bot.discord.handlers.get_settings", return_value=mock_settings),
+            patch("srebot.bot.commands.handle_command", AsyncMock(return_value=None)) as mock_hc,
+        ):
+            await on_message_func(message)
+
+        mock_hc.assert_called_once_with(
+            "/mute@otherbot 1h", None, "discord:9999", bot_username="srebot"
+        )
+        message.reply.assert_not_called()

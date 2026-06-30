@@ -209,18 +209,26 @@ async def _handle_alert_group(
 
 
 bot_user_id = None
+bot_username = None
+
+
+async def get_bot_info(client: AsyncWebClient) -> tuple[str, str]:
+    """Retrieve and cache the bot's user ID and username."""
+    global bot_user_id, bot_username
+    if bot_user_id is None or bot_username is None:
+        try:
+            auth_response = await client.auth_test()
+            bot_user_id = auth_response["user_id"]
+            bot_username = auth_response["user"]
+        except Exception as exc:
+            logger.warning("Could not fetch Slack bot info: %s", exc)
+    return bot_user_id or "", bot_username or ""
 
 
 async def get_bot_user_id(client: AsyncWebClient) -> str:
     """Retrieve and cache the bot's user ID."""
-    global bot_user_id
-    if bot_user_id is None:
-        try:
-            auth_response = await client.auth_test()
-            bot_user_id = auth_response["user_id"]
-        except Exception as exc:
-            logger.warning("Could not fetch Slack bot user ID: %s", exc)
-    return bot_user_id or ""
+    uid, _ = await get_bot_info(client)
+    return uid
 
 
 def clean_mentions(text: str, bot_id: str | None) -> str:
@@ -287,17 +295,25 @@ def register_handlers(app: AsyncApp, settings: Settings) -> None:
         if not text:
             return
 
-        bot_id = await get_bot_user_id(client)
+        bot_id, bot_name = await get_bot_info(client)
         is_mention = bool(bot_id and f"<@{bot_id}>" in text)
         cleaned_text = clean_mentions(text, bot_id)
 
-        # Check for commands using cleaned text
+        # Check for commands using raw content first (to support e.g. /mute@srebot)
         from srebot.bot.commands import extract_chat_id, handle_command, is_command_message
 
-        if is_command_message(cleaned_text):
+        command_text = None
+        if is_command_message(text):
+            command_text = text
+        elif is_command_message(cleaned_text):
+            command_text = cleaned_text
+
+        if command_text:
             chat_id = extract_chat_id(channel_id)
             if chat_id:
-                response = await handle_command(cleaned_text, thread_ts, chat_id)
+                response = await handle_command(
+                    command_text, thread_ts, chat_id, bot_username=bot_name
+                )
                 if response:
                     if not settings.dry_run:
                         try:

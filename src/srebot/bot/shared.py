@@ -168,6 +168,11 @@ async def handle_followup_question(
         if msg_ctx:
             fp = msg_ctx["fingerprint"]
             parent_incident_id = msg_ctx["incident_id"]
+            if fp and fp != "general_query":
+                ctx = await store.get_followup_context(fp)
+                if not ctx:
+                    fp = "general_query"
+                    parent_incident_id = None
 
     if not fp and chat_id:
         fp = await store.get_last_active_incident(chat_id)
@@ -175,6 +180,8 @@ async def handle_followup_question(
             ctx = await store.get_followup_context(fp)
             if ctx:
                 parent_incident_id = ctx.get("incident_id")
+            else:
+                fp = "general_query"
 
     if fp and fp != "general_query":
         # Check turns and context expiration for actual alert groups

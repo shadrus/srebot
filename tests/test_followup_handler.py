@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from srebot.bot.shared import RejectionReason
+from srebot.bot.shared import RejectionReason, handle_followup_question
 from srebot.bot.telegram.handlers import _handle_alert_group, followup_reply_handler
 from srebot.parser.alert_parser import Alert, AlertStatus
 
@@ -330,3 +330,121 @@ class TestFollowupReplyHandler:
             await followup_reply_handler(update, mock_context)
 
         update.message.reply_text.assert_not_called()
+
+    async def test_command_with_mention(self, mock_settings, mock_context):
+        update = self._make_update(text="@mock_bot /mute 1h", reply_to_id=None)
+        # Make the message from a user (is_bot = False) and a mention (not necessarily a reply)
+        update.message.reply_to_message = None
+        update.message.chat_id = -100
+
+        with (
+            patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings),
+            patch(
+                "srebot.bot.commands.handle_command",
+                AsyncMock(return_value="Muted globally"),
+            ) as mock_hc,
+        ):
+            await followup_reply_handler(update, mock_context)
+
+        mock_hc.assert_called_once_with("/mute 1h", None, "-100", bot_username="mock_bot")
+        update.message.reply_text.assert_called_once()
+        args = update.message.reply_text.call_args[0][0]
+        assert "Muted globally" in args
+
+
+class TestHandleFollowupQuestionDirect:
+    async def test_expired_context_on_reply_falls_back_to_general_query(
+        self, mock_store, mock_agent, mock_settings
+    ):
+        mock_store.get_bot_message_context = AsyncMock(
+            return_value={"fingerprint": "fp123", "incident_id": "incident123"}
+        )
+        mock_store.get_followup_context = AsyncMock(return_value=None)
+
+        with (
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.bot.shared.get_agent", return_value=mock_agent),
+            patch("srebot.config.get_settings", return_value=mock_settings),
+        ):
+            answer, new_incident_id, rejection = await handle_followup_question(
+                reply_to_id="99",
+                question="What's wrong?",
+                user_id="777",
+                chat_id="-100",
+            )
+
+        assert rejection is None
+        assert answer == "Follow-up answer"
+        mock_agent.followup.assert_called_once_with(
+            question="What's wrong?",
+            rca_text="",
+            alert_data=[],
+            allowed_servers=None,
+            parent_incident_id=None,
+            user_name=None,
+        )
+
+    async def test_expired_context_on_mention_falls_back_to_general_query(
+        self, mock_store, mock_agent, mock_settings
+    ):
+        mock_store.get_last_active_incident = AsyncMock(return_value="fp123")
+        mock_store.get_followup_context = AsyncMock(return_value=None)
+
+        with (
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.bot.shared.get_agent", return_value=mock_agent),
+            patch("srebot.config.get_settings", return_value=mock_settings),
+        ):
+            answer, new_incident_id, rejection = await handle_followup_question(
+                reply_to_id=None,
+                question="What's wrong?",
+                user_id="777",
+                chat_id="-100",
+            )
+
+        assert rejection is None
+        assert answer == "Follow-up answer"
+        mock_agent.followup.assert_called_once_with(
+            question="What's wrong?",
+            rca_text="",
+            alert_data=[],
+            allowed_servers=None,
+            parent_incident_id=None,
+            user_name=None,
+        )
+
+    async def test_active_context_on_mention_uses_context(
+        self, mock_store, mock_agent, mock_settings
+    ):
+        mock_store.get_last_active_incident = AsyncMock(return_value="fp123")
+        mock_store.get_followup_context = AsyncMock(
+            return_value={
+                "rca_text": "previous rca",
+                "alert_data": [{"alertname": "CPUHigh"}],
+                "incident_id": "incident123",
+            }
+        )
+        mock_store.increment_followup_turns = AsyncMock(return_value=1)
+
+        with (
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.bot.shared.get_agent", return_value=mock_agent),
+            patch("srebot.config.get_settings", return_value=mock_settings),
+        ):
+            answer, new_incident_id, rejection = await handle_followup_question(
+                reply_to_id=None,
+                question="What's wrong?",
+                user_id="777",
+                chat_id="-100",
+            )
+
+        assert rejection is None
+        assert answer == "Follow-up answer"
+        mock_agent.followup.assert_called_once_with(
+            question="What's wrong?",
+            rca_text="previous rca",
+            alert_data=[{"alertname": "CPUHigh"}],
+            allowed_servers=None,
+            parent_incident_id="incident123",
+            user_name=None,
+        )
