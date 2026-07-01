@@ -80,6 +80,19 @@ async def query_prometheus(cluster: str, expr: str) -> dict:
 
 ---
 
+## Design Principles & Clean Code
+
+All contributions must adhere to clean code principles to ensure maintainability, readability, and robustness:
+
+*   **DRY (Don't Repeat Yourself)**: Never duplicate business logic. If a piece of logic (such as validation, query filters, alert parsing steps, external API call wrappers) is used in multiple places, extract it to a shared helper function, custom decorator, utility module, or dedicated service class.
+*   **SOLID Principles**:
+    *   *Single Responsibility (SRP)*: Keep functions and classes small. A function should do one thing and do it well. For example, keep Telegram bot callback handlers thin; move parsing and state tracking logic into dedicated modules (e.g., `parser/`, `state/`).
+    *   *Interface Segregation & Dependency Inversion (DIP)*: Depend on abstractions rather than concrete implementations where possible. Inject dependencies (like Redis stores, HTTP clients, LLM clients) rather than hardcoding or instantiating them globally where they interfere with test isolation.
+*   **KISS (Keep It Simple, Stupid)**: Avoid premature generalization and complex design patterns (like overly nested abstraction layers) unless explicitly required. Simple, clear, and readable code is always preferred over clever code.
+*   **Defensive Programming (Fail Fast)**: Validate arguments and pre-conditions at the beginning of functions. Raise explicit exceptions or return clear error responses immediately rather than letting failures cascade deep into the logic.
+
+---
+
 ## Project Structure
 
 ```

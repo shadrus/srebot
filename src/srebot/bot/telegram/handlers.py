@@ -6,12 +6,16 @@ from telegram import Message, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from srebot.bot.shared import RejectionReason, handle_followup_question, process_alert_text
+import srebot.config as config
+import srebot.state.store as state_store
+from srebot.bot.shared import (
+    ChatAdapter,
+    RejectionReason,
+    handle_followup_question,
+    process_alert_text,
+)
 from srebot.bot.telegram.html_utils import markdown_to_telegram_html
-from srebot.config import get_settings
-from srebot.llm.agent import get_agent
-from srebot.parser.alert_parser import Alert, AlertStatus
-from srebot.state.store import get_store
+from srebot.parser.alert_parser import Alert
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +27,8 @@ MESSAGES = {
         "analyzing_followup": "🔍 <i>Анализирую...</i>",
         "cooldown": "⏳ <i>Подождите немного перед следующим вопросом.</i>",
         "limit_reached": "🔒 <i>Лимит уточняющих вопросов по этому инциденту исчерпан ({current}/{max}).</i>",  # noqa: E501
+        "resolved_alert": "✅ <b>Решено:</b> <code>{alertname}</code>\n<b>Кластер:</b> {cluster} | <b>Job:</b> {job}",
+        "new_alert": "🚨 <b>Новый алерт:</b> <code>{alertname}</code>\n<b>Кластер:</b> {cluster} | <b>Job:</b> {job}\n\n<i>💬 Ответьте (Reply) на это сообщение, чтобы запустить AI-анализ.</i>",
     },
     "English": {
         "analyzing_alerts": "🔍 <b>Analyzing {count} alert(s)…</b>",
@@ -30,12 +36,14 @@ MESSAGES = {
         "analyzing_followup": "🔍 <i>Analyzing...</i>",
         "cooldown": "⏳ <i>Please wait a bit before the next question.</i>",
         "limit_reached": "🔒 <i>Limit of follow-up questions for this incident reached ({current}/{max}).</i>",  # noqa: E501
+        "resolved_alert": "✅ <b>Resolved:</b> <code>{alertname}</code>\n<b>Cluster:</b> {cluster} | <b>Job:</b> {job}",
+        "new_alert": "🚨 <b>New Alert:</b> <code>{alertname}</code>\n<b>Cluster:</b> {cluster} | <b>Job:</b> {job}\n\n<i>💬 Reply to this message to run AI analysis.</i>",
     },
 }
 
 
 def get_msg(key: str) -> str:
-    lang = get_settings().llm_response_language
+    lang = config.get_settings().llm_response_language
     return MESSAGES.get(lang, MESSAGES["English"]).get(key, "")
 
 
@@ -51,6 +59,103 @@ async def _reply(source_msg: Message, text: str, dry_run: bool) -> Message | Non
     )
 
 
+class TelegramChatAdapter(ChatAdapter):
+    def __init__(self, source_msg: Message, dry_run: bool):
+        self.source_msg = source_msg
+        self.dry_run = dry_run
+
+    def get_chat_id(self) -> str:
+        return str(self.source_msg.chat_id)
+
+    async def send_resolved(
+        self, label: str, primary: Alert, current_status: str, reply_to_id: str | None
+    ) -> None:
+        try:
+            await _reply(
+                self.source_msg,
+                get_msg("resolved_alert").format(
+                    alertname=primary.alertname,
+                    cluster=primary.cluster,
+                    job=primary.labels.get("job", "—"),
+                ),
+                self.dry_run,
+            )
+        except Exception as exc:
+            logger.warning("Could not send resolved reply: %s", exc)
+
+    async def send_short_notification(
+        self, group_fp: str, label: str, primary: Alert
+    ) -> str | int | None:
+        msg_text = get_msg("new_alert").format(
+            alertname=primary.alertname,
+            cluster=primary.cluster,
+            job=primary.labels.get("job", "—"),
+        )
+        if self.dry_run:
+            logger.info("[DRY-RUN] Would send Telegram short notification:\n%s", msg_text)
+            return None
+        try:
+            placeholder = await self.source_msg.reply_text(
+                msg_text,
+                parse_mode=ParseMode.HTML,
+                reply_to_message_id=self.source_msg.message_id,
+            )
+            return placeholder.message_id
+        except Exception as exc:
+            logger.error("Failed to send short notification: %s", exc)
+            return None
+
+    async def send_analyzing_placeholder(
+        self, group_fp: str, label: str, primary: Alert, alert_count: int
+    ) -> str | int | None:
+        if self.dry_run:
+            logger.info(
+                "[DRY-RUN] Analyzing group %s: %d alert(s) (no Telegram placeholder sent)",
+                group_fp,
+                alert_count,
+            )
+            return None
+        try:
+            placeholder = await self.source_msg.reply_text(
+                get_msg("analyzing_alerts").format(count=alert_count) + "\n"
+                f"<code>{primary.alertname}</code> · "
+                f"{primary.cluster} · {primary.labels.get('job', '')}",
+                parse_mode=ParseMode.HTML,
+                reply_to_message_id=self.source_msg.message_id,
+            )
+            return placeholder.message_id
+        except Exception as exc:
+            logger.error("Failed to send placeholder reply: %s", exc)
+            return None
+
+    async def update_with_analysis(
+        self, group_fp: str, placeholder_id: str | int | None, analysis: str, is_billing_error: bool
+    ) -> str | int | None:
+        safe_analysis = markdown_to_telegram_html(analysis)
+        if not is_billing_error:
+            ttl_hours = config.get_settings().followup_ttl // 3600
+            safe_analysis += get_msg("ttl_footer").format(hours=ttl_hours)
+
+        if placeholder_id is None:
+            if not self.dry_run:
+                msg = await _reply(self.source_msg, safe_analysis, self.dry_run)
+                return msg.message_id if msg else None
+            return None
+
+        try:
+            await self.source_msg.get_bot().edit_message_text(
+                chat_id=self.source_msg.chat_id,
+                message_id=placeholder_id,
+                text=safe_analysis,
+                parse_mode=ParseMode.HTML,
+            )
+            return placeholder_id
+        except Exception as exc:
+            logger.error("Could not update placeholder %s with analysis: %s", placeholder_id, exc)
+            msg = await _reply(self.source_msg, safe_analysis, self.dry_run)
+            return msg.message_id if msg else None
+
+
 async def _handle_alert_group(
     group_fp: str,
     alerts: list[Alert],
@@ -58,150 +163,13 @@ async def _handle_alert_group(
 ) -> None:
     """
     Process a group of related alerts as a single analysis.
-    All alerts share the same alertname + cluster + job.
+    Delegates to shared workflow.
     """
-    dry_run = get_settings().dry_run
-    store = await get_store()
-    agent = get_agent()
+    from srebot.bot.shared import execute_alert_group_workflow
 
-    # Use the first alert as the representative for status/metadata
-    primary = alerts[0]
-    label = f"{primary.alertname} ({primary.cluster}/{primary.labels.get('job', '')})"
-
-    # --- RESOLVED ---
-    if primary.status == AlertStatus.RESOLVED:
-        current_status = await store.get_status(group_fp)
-        reply_to_id = await store.get_reply_message_id(group_fp)
-
-        await store.mark_resolved(group_fp)
-        logger.info("Resolved group [%s]: %s (was %s)", group_fp, label, current_status)
-
-        # Notify if we were tracking this alert (firing or analyzing)
-        if current_status in ("firing", "analyzing") or reply_to_id:
-            try:
-                await _reply(
-                    source_msg,
-                    f"✅ <b>Resolved:</b> <code>{primary.alertname}</code>\n"
-                    f"<b>Cluster:</b> {primary.cluster} | "
-                    f"<b>Job:</b> {primary.labels.get('job', '—')}",
-                    dry_run,
-                )
-            except Exception as exc:
-                logger.warning("Could not send resolved reply: %s", exc)
-        return
-
-    # --- FIRING ---
-    if not await store.is_new(group_fp):
-        logger.info("Duplicate firing group (skip): %s [%s]", label, group_fp)
-        return
-
-    logger.info("New firing group [%s]: %s (%d alert(s))", group_fp, label, len(alerts))
-
-    # Send placeholder
-    placeholder = None
-    if not dry_run:
-        try:
-            placeholder = await source_msg.reply_text(
-                get_msg("analyzing_alerts").format(count=len(alerts)) + "\n"
-                f"<code>{primary.alertname}</code> · "
-                f"{primary.cluster} · {primary.labels.get('job', '')}",
-                parse_mode=ParseMode.HTML,
-                reply_to_message_id=source_msg.message_id,
-            )
-            # Mark as ANALYZING so concurrent RESOLVED messages know we are on it
-            await store.mark_analyzing(group_fp, placeholder.message_id)
-        except Exception as exc:
-            logger.error("Failed to send placeholder reply: %s", exc)
-            return
-    else:
-        logger.info(
-            "[DRY-RUN] Analyzing group %s: %d alert(s) (no Telegram placeholder sent)",
-            group_fp,
-            len(alerts),
-        )
-        await store.mark_analyzing(group_fp, 0)
-
-    # Run LLM analysis
-    try:
-        analysis, incident_id = await agent.analyze(alerts)
-    except Exception as exc:
-        logger.exception("LLM analysis failed for group %s", group_fp)
-        analysis = f"⚠️ <b>Analysis failed:</b> <code>{exc}</code>\nPlease investigate manually."
-        incident_id = None
-
-    # Check if the alert was resolved while we were analyzing
-    current_status = await store.get_status(group_fp)
-
-    if dry_run:
-        logger.info("[DRY-RUN] Analysis result for group %s:\n%s", group_fp, analysis)
-        if current_status == "analyzing":
-            await store.mark_firing(group_fp, reply_message_id=0)
-        return
-
-    # ALWAYS update the UI with findings, even if already resolved
-    safe_analysis = markdown_to_telegram_html(analysis)
-
-    # Append TTL footer so engineers know how long the follow-up window is open
-    is_billing_error = (
-        "insufficient balance" in analysis.lower() or "недостаточно баланса" in analysis.lower()
-    )
-    if not is_billing_error:
-        ttl_hours = get_settings().followup_ttl // 3600
-        safe_analysis += get_msg("ttl_footer").format(hours=ttl_hours)
-
-    try:
-        await placeholder.edit_text(safe_analysis, parse_mode=ParseMode.HTML)
-    except Exception as exc:
-        logger.warning("Could not edit placeholder (%s), sending new message", exc)
-        try:
-            await source_msg.reply_text(
-                safe_analysis,
-                parse_mode=ParseMode.HTML,
-                reply_to_message_id=source_msg.message_id,
-            )
-        except Exception as exc2:
-            logger.error(
-                "Could not send analysis reply with HTML (%s), falling back to plain text",  # noqa: E501
-                exc2,
-            )
-            try:
-                # Final fallback: send raw text without any formatting
-                await source_msg.reply_text(
-                    analysis,
-                    parse_mode=None,
-                    reply_to_message_id=source_msg.message_id,
-                )
-            except Exception as exc3:
-                logger.error("Total failure sending analysis reply: %s", exc3)
-                return
-
-    # Only restore FIRING state if it wasn't cleared by a RESOLVED message
-    if current_status == "analyzing":
-        await store.mark_firing(group_fp, placeholder.message_id)
-        # Save follow-up context for thread replies
-        alert_data = [
-            {
-                "status": a.status,
-                "alertname": a.alertname,
-                "cluster": a.cluster,
-                "namespace": a.namespace,
-                "severity": a.severity,
-                "labels": a.labels,
-                "annotations": a.annotations,
-                "fingerprint": a.fingerprint,
-                "source_url": a.source_url,
-            }
-            for a in alerts
-        ]
-        await store.save_followup_context(group_fp, analysis, alert_data, incident_id=incident_id)
-        await store.register_bot_message(placeholder.message_id, group_fp, incident_id=incident_id)
-        await store.set_last_active_incident(str(source_msg.chat_id), group_fp)
-    else:
-        logger.info(
-            "Alert %s was %s during analysis. Not marking as firing.",
-            group_fp,
-            current_status,
-        )
+    dry_run = config.get_settings().dry_run
+    adapter = TelegramChatAdapter(source_msg, dry_run)
+    await execute_alert_group_workflow(group_fp, alerts, adapter, dry_run)
 
 
 def clean_mentions(text: str, bot_username: str | None, bot_first_name: str | None) -> str:
@@ -263,7 +231,7 @@ async def followup_reply_handler(update: Update, context: ContextTypes.DEFAULT_T
     if not is_reply and not is_mention:
         return
 
-    dry_run = get_settings().dry_run
+    dry_run = config.get_settings().dry_run
     reply_to_id = str(msg.reply_to_message.message_id) if is_reply else None
     chat_id = str(msg.chat_id)
     user_id = str(msg.from_user.id) if getattr(msg, "from_user", None) else f"channel_{msg.chat_id}"
@@ -330,7 +298,7 @@ async def followup_reply_handler(update: Update, context: ContextTypes.DEFAULT_T
                 logger.warning("Could not delete follow-up indicator: %s", exc)
         return
 
-    answer, new_incident_id, rejection = await handle_followup_question(
+    answer, new_incident_id, fp_used, rejection = await handle_followup_question(
         reply_to_id=reply_to_id,
         question=cleaned_question,
         user_id=user_id,
@@ -350,7 +318,7 @@ async def followup_reply_handler(update: Update, context: ContextTypes.DEFAULT_T
         if rejection == RejectionReason.COOLDOWN:
             user_msg = get_msg("cooldown")
         else:  # LIMIT_REACHED
-            max_turns = get_settings().followup_max_turns
+            max_turns = config.get_settings().followup_max_turns
             user_msg = get_msg("limit_reached").format(current=max_turns, max=max_turns)
 
         if indicator:
@@ -408,22 +376,10 @@ async def followup_reply_handler(update: Update, context: ContextTypes.DEFAULT_T
     elif indicator:
         final_msg_id = indicator.message_id
 
-    if final_msg_id and new_incident_id:
-        store = await get_store()
-        fingerprint = None
-        if reply_to_id:
-            fingerprint = await store.get_fp_by_message_id(reply_to_id)
-        if not fingerprint and chat_id:
-            last_fp = await store.get_last_active_incident(chat_id)
-            if last_fp:
-                ctx = await store.get_followup_context(last_fp)
-                if ctx:
-                    fingerprint = last_fp
-        if not fingerprint:
-            fingerprint = "general_query"
-
-        await store.register_bot_message(final_msg_id, fingerprint, incident_id=new_incident_id)
-        await store.set_last_active_incident(chat_id, fingerprint)
+    if final_msg_id and new_incident_id and fp_used:
+        store = await state_store.get_store()
+        await store.register_bot_message(final_msg_id, fp_used, incident_id=new_incident_id)
+        await store.set_last_active_incident(chat_id, fp_used)
 
 
 async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -468,7 +424,7 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if is_command_message(msg.text):
         chat_id = extract_chat_id(msg)
         if chat_id:
-            dry_run = get_settings().dry_run
+            dry_run = config.get_settings().dry_run
             response = await handle_command(
                 msg.text, None, chat_id, bot_username=context.bot.username
             )

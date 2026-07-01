@@ -96,6 +96,9 @@ def mock_message():
     placeholder.message_id = 99
     placeholder.edit_text = AsyncMock()
     msg.reply_text = AsyncMock(return_value=placeholder)
+    bot_mock = MagicMock()
+    bot_mock.edit_message_text = AsyncMock()
+    msg.get_bot = MagicMock(return_value=bot_mock)
     return msg
 
 
@@ -108,11 +111,9 @@ class TestHandleAlertGroupResolved:
     async def test_resolved_marks_store(self, mock_store, mock_agent, mock_message):
         alert = _resolved_alert()
         with (
-            patch("srebot.bot.telegram.handlers.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.telegram.handlers.get_agent", return_value=mock_agent),
-            patch(
-                "srebot.bot.telegram.handlers.get_settings", return_value=MagicMock(dry_run=False)
-            ),  # noqa: E501
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.llm.agent.get_agent", return_value=mock_agent),
+            patch("srebot.config.get_settings", return_value=MagicMock(dry_run=False)),  # noqa: E501
         ):
             await _handle_alert_group("fp123", [alert], mock_message)
 
@@ -125,11 +126,9 @@ class TestHandleAlertGroupResolved:
         alert = _resolved_alert()
         mock_store.get_reply_message_id = AsyncMock(return_value=99)
         with (
-            patch("srebot.bot.telegram.handlers.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.telegram.handlers.get_agent", return_value=mock_agent),
-            patch(
-                "srebot.bot.telegram.handlers.get_settings", return_value=MagicMock(dry_run=False)
-            ),  # noqa: E501
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.llm.agent.get_agent", return_value=mock_agent),
+            patch("srebot.config.get_settings", return_value=MagicMock(dry_run=False)),  # noqa: E501
         ):
             await _handle_alert_group("fp123", [alert], mock_message)
 
@@ -141,11 +140,9 @@ class TestHandleAlertGroupResolved:
         alert = _resolved_alert()
         mock_store.get_reply_message_id = AsyncMock(return_value=None)
         with (
-            patch("srebot.bot.telegram.handlers.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.telegram.handlers.get_agent", return_value=mock_agent),
-            patch(
-                "srebot.bot.telegram.handlers.get_settings", return_value=MagicMock(dry_run=False)
-            ),  # noqa: E501
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.llm.agent.get_agent", return_value=mock_agent),
+            patch("srebot.config.get_settings", return_value=MagicMock(dry_run=False)),  # noqa: E501
         ):
             await _handle_alert_group("fp123", [alert], mock_message)
 
@@ -163,11 +160,9 @@ class TestHandleAlertGroupFiring:
     ):
         alert = _firing_alert()
         with (
-            patch("srebot.bot.telegram.handlers.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.telegram.handlers.get_agent", return_value=mock_agent),
-            patch(
-                "srebot.bot.telegram.handlers.get_settings", return_value=MagicMock(dry_run=False)
-            ),  # noqa: E501
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.llm.agent.get_agent", return_value=mock_agent),
+            patch("srebot.config.get_settings", return_value=MagicMock(dry_run=False)),  # noqa: E501
         ):
             await _handle_alert_group("fp123", [alert], mock_message)
 
@@ -175,8 +170,9 @@ class TestHandleAlertGroupFiring:
         mock_message.reply_text.assert_called_once()
         placeholder = mock_message.reply_text.return_value
         # then edited with analysis
-        placeholder.edit_text.assert_called_once()
-        edited_text = placeholder.edit_text.call_args[0][0]
+        bot_mock = mock_message.get_bot()
+        bot_mock.edit_message_text.assert_called_once()
+        edited_text = bot_mock.edit_message_text.call_args[1]["text"]
         assert "Analysis result" in edited_text
 
     async def test_new_firing_marks_store_with_placeholder_id(
@@ -185,26 +181,22 @@ class TestHandleAlertGroupFiring:
         alert = _firing_alert()
         mock_message.reply_text.return_value.message_id = 77
         with (
-            patch("srebot.bot.telegram.handlers.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.telegram.handlers.get_agent", return_value=mock_agent),
-            patch(
-                "srebot.bot.telegram.handlers.get_settings", return_value=MagicMock(dry_run=False)
-            ),  # noqa: E501
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.llm.agent.get_agent", return_value=mock_agent),
+            patch("srebot.config.get_settings", return_value=MagicMock(dry_run=False)),  # noqa: E501
         ):
             mock_store.get_status.return_value = "analyzing"
             await _handle_alert_group("fp123", [alert], mock_message)
 
-        mock_store.mark_firing.assert_called_once_with("fp123", 77)
+        mock_store.mark_firing.assert_called_once_with("fp123", "77")
 
     async def test_duplicate_firing_skips_analysis(self, mock_store, mock_agent, mock_message):
         alert = _firing_alert()
         mock_store.is_new = AsyncMock(return_value=False)
         with (
-            patch("srebot.bot.telegram.handlers.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.telegram.handlers.get_agent", return_value=mock_agent),
-            patch(
-                "srebot.bot.telegram.handlers.get_settings", return_value=MagicMock(dry_run=False)
-            ),  # noqa: E501
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.llm.agent.get_agent", return_value=mock_agent),
+            patch("srebot.config.get_settings", return_value=MagicMock(dry_run=False)),  # noqa: E501
         ):
             await _handle_alert_group("fp123", [alert], mock_message)
 
@@ -215,16 +207,14 @@ class TestHandleAlertGroupFiring:
         alert = _firing_alert()
         mock_agent.analyze = AsyncMock(side_effect=RuntimeError("LLM down"))
         with (
-            patch("srebot.bot.telegram.handlers.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.telegram.handlers.get_agent", return_value=mock_agent),
-            patch(
-                "srebot.bot.telegram.handlers.get_settings", return_value=MagicMock(dry_run=False)
-            ),  # noqa: E501
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.llm.agent.get_agent", return_value=mock_agent),
+            patch("srebot.config.get_settings", return_value=MagicMock(dry_run=False)),  # noqa: E501
         ):
             await _handle_alert_group("fp123", [alert], mock_message)
 
         placeholder = mock_message.reply_text.return_value
-        edited_text = placeholder.edit_text.call_args[0][0]
+        edited_text = mock_message.get_bot().edit_message_text.call_args[1]["text"]
         assert "Analysis failed" in edited_text
 
     async def test_edit_failure_falls_back_to_new_message(
@@ -232,13 +222,11 @@ class TestHandleAlertGroupFiring:
     ):
         alert = _firing_alert()
         placeholder = mock_message.reply_text.return_value
-        placeholder.edit_text = AsyncMock(side_effect=Exception("edit failed"))
+        mock_message.get_bot().edit_message_text.side_effect = Exception("edit failed")
         with (
-            patch("srebot.bot.telegram.handlers.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.telegram.handlers.get_agent", return_value=mock_agent),
-            patch(
-                "srebot.bot.telegram.handlers.get_settings", return_value=MagicMock(dry_run=False)
-            ),  # noqa: E501
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.llm.agent.get_agent", return_value=mock_agent),
+            patch("srebot.config.get_settings", return_value=MagicMock(dry_run=False)),  # noqa: E501
         ):
             await _handle_alert_group("fp123", [alert], mock_message)
 
@@ -255,11 +243,9 @@ class TestHandleAlertGroupDryRun:
     async def test_dry_run_does_not_call_reply_text(self, mock_store, mock_agent, mock_message):
         alert = _firing_alert()
         with (
-            patch("srebot.bot.telegram.handlers.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.telegram.handlers.get_agent", return_value=mock_agent),
-            patch(
-                "srebot.bot.telegram.handlers.get_settings", return_value=MagicMock(dry_run=True)
-            ),  # noqa: E501
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.llm.agent.get_agent", return_value=mock_agent),
+            patch("srebot.config.get_settings", return_value=MagicMock(dry_run=True)),  # noqa: E501
         ):
             await _handle_alert_group("fp123", [alert], mock_message)
 
@@ -268,11 +254,9 @@ class TestHandleAlertGroupDryRun:
     async def test_dry_run_marks_firing_with_zero(self, mock_store, mock_agent, mock_message):
         alert = _firing_alert()
         with (
-            patch("srebot.bot.telegram.handlers.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.telegram.handlers.get_agent", return_value=mock_agent),
-            patch(
-                "srebot.bot.telegram.handlers.get_settings", return_value=MagicMock(dry_run=True)
-            ),  # noqa: E501
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.llm.agent.get_agent", return_value=mock_agent),
+            patch("srebot.config.get_settings", return_value=MagicMock(dry_run=True)),  # noqa: E501
         ):
             mock_store.get_status.return_value = "analyzing"
             await _handle_alert_group("fp123", [alert], mock_message)

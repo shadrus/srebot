@@ -63,6 +63,9 @@ def mock_message():
     placeholder.message_id = 99
     placeholder.edit_text = AsyncMock()
     msg.reply_text = AsyncMock(return_value=placeholder)
+    bot_mock = MagicMock()
+    bot_mock.edit_message_text = AsyncMock()
+    msg.get_bot = MagicMock(return_value=bot_mock)
     return msg
 
 
@@ -96,9 +99,9 @@ class TestHandleAlertGroupFollowupContext:
     ):
         alert = _firing_alert()
         with (
-            patch("srebot.bot.telegram.handlers.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.telegram.handlers.get_agent", return_value=mock_agent),
-            patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings),
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.llm.agent.get_agent", return_value=mock_agent),
+            patch("srebot.config.get_settings", return_value=mock_settings),
         ):
             await _handle_alert_group("fp123", [alert], mock_message)
 
@@ -113,14 +116,14 @@ class TestHandleAlertGroupFollowupContext:
     ):
         alert = _firing_alert()
         with (
-            patch("srebot.bot.telegram.handlers.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.telegram.handlers.get_agent", return_value=mock_agent),
-            patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings),
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.llm.agent.get_agent", return_value=mock_agent),
+            patch("srebot.config.get_settings", return_value=mock_settings),
         ):
             await _handle_alert_group("fp123", [alert], mock_message)
 
         mock_store.register_bot_message.assert_called_once_with(
-            99, "fp123", incident_id="incident123"
+            "99", "fp123", incident_id="incident123"
         )
 
     async def test_no_followup_context_if_resolved_during_analysis(
@@ -130,9 +133,9 @@ class TestHandleAlertGroupFollowupContext:
         # Simulate alert resolved while analyzing
         mock_store.get_status = AsyncMock(return_value="resolved")
         with (
-            patch("srebot.bot.telegram.handlers.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.telegram.handlers.get_agent", return_value=mock_agent),
-            patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings),
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.llm.agent.get_agent", return_value=mock_agent),
+            patch("srebot.config.get_settings", return_value=mock_settings),
         ):
             await _handle_alert_group("fp123", [alert], mock_message)
 
@@ -144,14 +147,15 @@ class TestHandleAlertGroupFollowupContext:
         alert = _firing_alert()
         mock_settings.followup_ttl = 3600
         with (
-            patch("srebot.bot.telegram.handlers.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.telegram.handlers.get_agent", return_value=mock_agent),
-            patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings),
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.llm.agent.get_agent", return_value=mock_agent),
+            patch("srebot.config.get_settings", return_value=mock_settings),
         ):
             await _handle_alert_group("fp123", [alert], mock_message)
 
         placeholder = mock_message.reply_text.return_value
-        edited_text = placeholder.edit_text.call_args[0][0]
+        bot_mock = mock_message.get_bot()
+        edited_text = bot_mock.edit_message_text.call_args[1]["text"]
         assert "1 ч." in edited_text or "1" in edited_text or "1 h." in edited_text
 
     async def test_ttl_footer_not_added_on_insufficient_balance_english(
@@ -165,14 +169,15 @@ class TestHandleAlertGroupFollowupContext:
             )
         )
         with (
-            patch("srebot.bot.telegram.handlers.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.telegram.handlers.get_agent", return_value=mock_agent),
-            patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings),
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.llm.agent.get_agent", return_value=mock_agent),
+            patch("srebot.config.get_settings", return_value=mock_settings),
         ):
             await _handle_alert_group("fp123", [alert], mock_message)
 
         placeholder = mock_message.reply_text.return_value
-        edited_text = placeholder.edit_text.call_args[0][0]
+        bot_mock = mock_message.get_bot()
+        edited_text = bot_mock.edit_message_text.call_args[1]["text"]
         assert "Задайте уточняющие вопросы" not in edited_text
         assert "Ask follow-up questions" not in edited_text
 
@@ -187,14 +192,15 @@ class TestHandleAlertGroupFollowupContext:
             )
         )
         with (
-            patch("srebot.bot.telegram.handlers.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.telegram.handlers.get_agent", return_value=mock_agent),
-            patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings),
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.llm.agent.get_agent", return_value=mock_agent),
+            patch("srebot.config.get_settings", return_value=mock_settings),
         ):
             await _handle_alert_group("fp123", [alert], mock_message)
 
         placeholder = mock_message.reply_text.return_value
-        edited_text = placeholder.edit_text.call_args[0][0]
+        bot_mock = mock_message.get_bot()
+        edited_text = bot_mock.edit_message_text.call_args[1]["text"]
         assert "Задайте уточняющие вопросы" not in edited_text
         assert "Ask follow-up questions" not in edited_text
 
@@ -238,10 +244,10 @@ class TestFollowupReplyHandler:
         with (
             patch(
                 "srebot.bot.telegram.handlers.handle_followup_question",
-                AsyncMock(return_value=("Follow-up answer", "incident456", None)),
+                AsyncMock(return_value=("Follow-up answer", "incident456", "fp123", None)),
             ) as mock_fq,
-            patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings),
-            patch("srebot.bot.telegram.handlers.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.config.get_settings", return_value=mock_settings),
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
         ):
             await followup_reply_handler(update, mock_context)
 
@@ -254,9 +260,9 @@ class TestFollowupReplyHandler:
         with (
             patch(
                 "srebot.bot.telegram.handlers.handle_followup_question",
-                AsyncMock(return_value=("", None, RejectionReason.NO_CONTEXT)),
+                AsyncMock(return_value=("", None, None, RejectionReason.NO_CONTEXT)),
             ),
-            patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings),
+            patch("srebot.config.get_settings", return_value=mock_settings),
         ):
             await followup_reply_handler(update, mock_context)
 
@@ -270,9 +276,9 @@ class TestFollowupReplyHandler:
         with (
             patch(
                 "srebot.bot.telegram.handlers.handle_followup_question",
-                AsyncMock(return_value=("", None, RejectionReason.COOLDOWN)),
+                AsyncMock(return_value=("", None, None, RejectionReason.COOLDOWN)),
             ),
-            patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings),
+            patch("srebot.config.get_settings", return_value=mock_settings),
         ):
             await followup_reply_handler(update, mock_context)
 
@@ -287,9 +293,9 @@ class TestFollowupReplyHandler:
         with (
             patch(
                 "srebot.bot.telegram.handlers.handle_followup_question",
-                AsyncMock(return_value=("", None, RejectionReason.LIMIT_REACHED)),
+                AsyncMock(return_value=("", None, None, RejectionReason.LIMIT_REACHED)),
             ),
-            patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings),
+            patch("srebot.config.get_settings", return_value=mock_settings),
         ):
             await followup_reply_handler(update, mock_context)
 
@@ -300,7 +306,7 @@ class TestFollowupReplyHandler:
 
     async def test_ignores_bot_messages(self, mock_settings, mock_context):
         update = self._make_update(is_bot=True)
-        with patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings):
+        with patch("srebot.config.get_settings", return_value=mock_settings):
             await followup_reply_handler(update, mock_context)
 
         update.message.reply_text.assert_not_called()
@@ -312,7 +318,7 @@ class TestFollowupReplyHandler:
         msg.reply_to_message = None
         update.message = msg
 
-        with patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings):
+        with patch("srebot.config.get_settings", return_value=mock_settings):
             await followup_reply_handler(update, mock_context)
 
         msg.reply_text.assert_not_called()
@@ -323,9 +329,9 @@ class TestFollowupReplyHandler:
         with (
             patch(
                 "srebot.bot.telegram.handlers.handle_followup_question",
-                AsyncMock(return_value=("Follow-up answer", "incident456", None)),
+                AsyncMock(return_value=("Follow-up answer", "incident456", "fp123", None)),
             ),
-            patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings),
+            patch("srebot.config.get_settings", return_value=mock_settings),
         ):
             await followup_reply_handler(update, mock_context)
 
@@ -338,7 +344,7 @@ class TestFollowupReplyHandler:
         update.message.chat_id = -100
 
         with (
-            patch("srebot.bot.telegram.handlers.get_settings", return_value=mock_settings),
+            patch("srebot.config.get_settings", return_value=mock_settings),
             patch(
                 "srebot.bot.commands.handle_command",
                 AsyncMock(return_value="Muted globally"),
@@ -363,10 +369,10 @@ class TestHandleFollowupQuestionDirect:
 
         with (
             patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.shared.get_agent", return_value=mock_agent),
+            patch("srebot.llm.agent.get_agent", return_value=mock_agent),
             patch("srebot.config.get_settings", return_value=mock_settings),
         ):
-            answer, new_incident_id, rejection = await handle_followup_question(
+            answer, new_incident_id, fp_used, rejection = await handle_followup_question(
                 reply_to_id="99",
                 question="What's wrong?",
                 user_id="777",
@@ -392,10 +398,10 @@ class TestHandleFollowupQuestionDirect:
 
         with (
             patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.shared.get_agent", return_value=mock_agent),
+            patch("srebot.llm.agent.get_agent", return_value=mock_agent),
             patch("srebot.config.get_settings", return_value=mock_settings),
         ):
-            answer, new_incident_id, rejection = await handle_followup_question(
+            answer, new_incident_id, fp_used, rejection = await handle_followup_question(
                 reply_to_id=None,
                 question="What's wrong?",
                 user_id="777",
@@ -413,7 +419,7 @@ class TestHandleFollowupQuestionDirect:
             user_name=None,
         )
 
-    async def test_active_context_on_mention_uses_context(
+    async def test_active_context_on_mention_ignored_starts_new_dialogue(
         self, mock_store, mock_agent, mock_settings
     ):
         mock_store.get_last_active_incident = AsyncMock(return_value="fp123")
@@ -428,10 +434,10 @@ class TestHandleFollowupQuestionDirect:
 
         with (
             patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.shared.get_agent", return_value=mock_agent),
+            patch("srebot.llm.agent.get_agent", return_value=mock_agent),
             patch("srebot.config.get_settings", return_value=mock_settings),
         ):
-            answer, new_incident_id, rejection = await handle_followup_question(
+            answer, new_incident_id, fp_used, rejection = await handle_followup_question(
                 reply_to_id=None,
                 question="What's wrong?",
                 user_id="777",
@@ -442,9 +448,9 @@ class TestHandleFollowupQuestionDirect:
         assert answer == "Follow-up answer"
         mock_agent.followup.assert_called_once_with(
             question="What's wrong?",
-            rca_text="previous rca",
-            alert_data=[{"alertname": "CPUHigh"}],
+            rca_text="",
+            alert_data=[],
             allowed_servers=None,
-            parent_incident_id="incident123",
+            parent_incident_id=None,
             user_name=None,
         )

@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     # Dry-run / debug mode — log all outgoing messages instead of sending to Telegram
     dry_run: bool = False
 
+    # If false, bots will only run analysis when explicitly asked by the user in a reply
+    auto_analyze_alerts: bool = True
+
     @classmethod
     def settings_customise_sources(
         cls,

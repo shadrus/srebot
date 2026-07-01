@@ -12,11 +12,14 @@ import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 
-from srebot.llm.agent import get_agent
-from srebot.parser.alert_parser import Alert, parse_alert_message
+from srebot.parser.alert_parser import Alert, AlertStatus, parse_alert_message
 from srebot.parser.filtering import get_ignore_registry
 
 logger = logging.getLogger(__name__)
+
+import srebot.config as config
+import srebot.llm.agent as llm_agent
+import srebot.state.store as state_store
 
 
 class RejectionReason(enum.Enum):
@@ -25,6 +28,44 @@ class RejectionReason(enum.Enum):
     NO_CONTEXT = "no_context"  # No RCA context found — not a bot reply
     COOLDOWN = "cooldown"  # User is sending too fast
     LIMIT_REACHED = "limit_reached"  # Max turns exhausted for this incident
+
+
+from abc import ABC, abstractmethod
+
+
+class ChatAdapter(ABC):
+    @abstractmethod
+    async def send_resolved(
+        self, label: str, primary: Alert, current_status: str, reply_to_id: str | None
+    ) -> None:
+        """Called when an alert group is resolved."""
+        pass
+
+    @abstractmethod
+    async def send_short_notification(
+        self, group_fp: str, label: str, primary: Alert
+    ) -> str | int | None:
+        """Called to post a short notification when auto-analyze is disabled."""
+        pass
+
+    @abstractmethod
+    async def send_analyzing_placeholder(
+        self, group_fp: str, label: str, primary: Alert, alert_count: int
+    ) -> str | int | None:
+        """Called to post an initial 'Analyzing...' placeholder."""
+        pass
+
+    @abstractmethod
+    async def update_with_analysis(
+        self, group_fp: str, placeholder_id: str | int | None, analysis: str, is_billing_error: bool
+    ) -> str | int | None:
+        """Called to update the UI with the final analysis result. Returns the ID of the message displaying the analysis."""
+        pass
+
+    @abstractmethod
+    def get_chat_id(self) -> str:
+        """Returns the chat ID associated with this adapter for state tracking."""
+        pass
 
 
 def group_key(alert: Alert) -> str:
@@ -42,6 +83,120 @@ def group_key(alert: Alert) -> str:
     job = alert.labels.get("job", "")
     payload = f"{alert.alertname}:{alert.cluster}:{job}"
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+async def execute_alert_group_workflow(
+    group_fp: str,
+    alerts: list[Alert],
+    adapter: ChatAdapter,
+    dry_run: bool,
+) -> None:
+    """
+    Unified workflow for handling an alert group.
+    Applies to Telegram, Slack, and Discord via the ChatAdapter.
+    """
+
+    store = await state_store.get_store()
+    agent = llm_agent.get_agent()
+
+    primary = alerts[0]
+    label = f"{primary.alertname} ({primary.cluster}/{primary.labels.get('job', '')})"
+
+    # --- RESOLVED ---
+    if primary.status == AlertStatus.RESOLVED:
+        current_status = await store.get_status(group_fp)
+        reply_to_id = await store.get_reply_message_id(group_fp)
+
+        await store.mark_resolved(group_fp)
+        logger.info("Resolved group [%s]: %s (was %s)", group_fp, label, current_status)
+
+        if current_status in ("firing", "analyzing") or reply_to_id:
+            await adapter.send_resolved(label, primary, current_status, reply_to_id)
+        return
+
+    # --- FIRING ---
+    if not await store.is_new(group_fp):
+        logger.info("Duplicate firing group (skip): %s [%s]", label, group_fp)
+        return
+
+    logger.info("New firing group [%s]: %s (%d alert(s))", group_fp, label, len(alerts))
+
+    alert_data = [
+        {
+            "status": a.status,
+            "alertname": a.alertname,
+            "cluster": a.cluster,
+            "namespace": a.namespace,
+            "severity": a.severity,
+            "labels": a.labels,
+            "annotations": a.annotations,
+            "fingerprint": a.fingerprint,
+            "source_url": a.source_url,
+        }
+        for a in alerts
+    ]
+
+    chat_id = adapter.get_chat_id()
+
+    # Short Notification (Auto-analysis disabled)
+    if not config.get_settings().auto_analyze_alerts:
+        logger.info("Auto-analysis disabled, posting short notification for %s", group_fp)
+        msg_id = await adapter.send_short_notification(group_fp, label, primary)
+        if not dry_run and msg_id is not None:
+            await store.mark_firing(group_fp, str(msg_id))
+            await store.save_followup_context(group_fp, "", alert_data, incident_id=None)
+            await store.register_bot_message(str(msg_id), group_fp, incident_id=None)
+            await store.set_last_active_incident(chat_id, group_fp)
+        elif dry_run:
+            await store.mark_firing(group_fp, "0")
+        return
+
+    # Send analyzing placeholder
+    placeholder_id = await adapter.send_analyzing_placeholder(group_fp, label, primary, len(alerts))
+    if not dry_run and placeholder_id is not None:
+        await store.mark_analyzing(group_fp, str(placeholder_id))
+    elif dry_run:
+        await store.mark_analyzing(group_fp, "0")
+
+    # Run LLM analysis
+    try:
+        analysis, incident_id = await agent.analyze(alerts)
+    except Exception as exc:
+        logger.exception("LLM analysis failed for group %s", group_fp)
+        analysis = f"⚠️ Analysis failed: {exc}\nPlease investigate manually."
+        incident_id = None
+
+    is_billing_error = (
+        "insufficient balance" in analysis.lower() or "недостаточно баланса" in analysis.lower()
+    )
+
+    current_status = await store.get_status(group_fp)
+
+    if dry_run:
+        logger.info("[DRY-RUN] Analysis result for group %s:\n%s", group_fp, analysis)
+        if current_status == "analyzing":
+            await store.mark_firing(group_fp, reply_message_id=0)
+        return
+
+    # Update UI with final analysis
+    final_msg_id = await adapter.update_with_analysis(
+        group_fp, placeholder_id, analysis, is_billing_error
+    )
+
+    if final_msg_id is not None:
+        if current_status == "analyzing":
+            await store.save_followup_context(
+                group_fp, analysis, alert_data, incident_id=incident_id
+            )
+            await store.register_bot_message(str(final_msg_id), group_fp, incident_id=incident_id)
+            await store.set_last_active_incident(chat_id, group_fp)
+            await store.mark_firing(group_fp, str(final_msg_id))
+        elif current_status == "resolved":
+            logger.info(
+                "Alert %s was resolved during analysis. Not marking as firing or saving followup context.",
+                group_fp,
+            )
+            await store.mark_resolved(group_fp)
 
 
 async def process_alert_text(
@@ -67,7 +222,7 @@ async def process_alert_text(
     if not alerts:
         # Fallback to Intelligent Parsing via SaaS Agent
         logger.info("Regex parsing failed, trying smart parsing via Agent...")
-        agent = get_agent()
+        agent = llm_agent.get_agent()
         alerts = await agent.parse_raw_text(text)
 
     if not alerts:
@@ -81,11 +236,10 @@ async def process_alert_text(
 
     # Filter out muted alerts
     from srebot.bot.commands import extract_chat_id
-    from srebot.state.store import get_store
 
     chat_id = extract_chat_id(*handler_args)
     if chat_id:
-        store = await get_store()
+        store = await state_store.get_store()
         unmuted_alerts = []
         for a in active_alerts:
             if await store.is_muted(chat_id, a.alertname):
@@ -128,7 +282,7 @@ async def handle_followup_question(
     chat_id: str | None = None,
     allowed_servers: list[str] | None = None,
     user_display_name: str | None = None,
-) -> tuple[str, str | None, RejectionReason | None]:
+) -> tuple[str, str | None, str | None, RejectionReason | None]:
     """
     Common follow-up processing pipeline shared by all platform integrations.
 
@@ -143,20 +297,18 @@ async def handle_followup_question(
         allowed_servers: MCP server names allowed for this cluster (passed to agent).
 
     Returns:
-        Tuple of (answer, new_incident_id, rejection_reason). If rejection_reason is not None,
+        Tuple of (answer, new_incident_id, fingerprint_used, rejection_reason). If rejection_reason is not None,
         answer is an empty string and the caller should surface a platform-specific
         user-facing message based on the rejection reason.
     """
-    from srebot.config import get_settings
-    from srebot.state.store import get_store
 
-    store = await get_store()
-    settings = get_settings()
+    store = await state_store.get_store()
+    settings = config.get_settings()
 
     in_cooldown = await store.check_and_set_user_cooldown(user_id)
     if in_cooldown:
         logger.debug("Follow-up: user %s is in cooldown", user_id)
-        return "", None, RejectionReason.COOLDOWN
+        return "", None, None, RejectionReason.COOLDOWN
 
     fp = None
     parent_incident_id = None
@@ -173,14 +325,6 @@ async def handle_followup_question(
                 if not ctx:
                     fp = "general_query"
 
-    if not fp and chat_id:
-        fp = await store.get_last_active_incident(chat_id)
-        if fp:
-            ctx = await store.get_followup_context(fp)
-            if ctx:
-                parent_incident_id = ctx.get("incident_id")
-            else:
-                fp = "general_query"
 
     if fp and fp != "general_query":
         # Check turns and context expiration for actual alert groups
@@ -192,12 +336,12 @@ async def handle_followup_question(
                 fp,
                 turns,
             )
-            return "", None, RejectionReason.LIMIT_REACHED
+            return "", None, fp, RejectionReason.LIMIT_REACHED
 
         ctx = await store.get_followup_context(fp)
         if not ctx:
             logger.debug("Follow-up: context expired for group %s", fp)
-            return "", None, RejectionReason.NO_CONTEXT
+            return "", None, fp, RejectionReason.NO_CONTEXT
         rca_text = ctx["rca_text"]
         alert_data = ctx["alert_data"]
     else:
@@ -207,7 +351,7 @@ async def handle_followup_question(
         alert_data = []
         allowed_servers = None  # General queries can use all tools
 
-    agent = get_agent()
+    agent = llm_agent.get_agent()
     answer, new_incident_id = await agent.followup(
         question=question,
         rca_text=rca_text,
@@ -217,7 +361,10 @@ async def handle_followup_question(
         user_name=user_display_name,
     )
 
-    if new_incident_id and fp != "general_query":
-        await store.update_followup_context_incident_id(fp, new_incident_id)
+    if fp != "general_query":
+        if new_incident_id:
+            await store.update_followup_context_incident_id(fp, new_incident_id)
+        if not rca_text:
+            await store.update_followup_context_rca_text(fp, answer)
 
-    return answer, new_incident_id, None
+    return answer, new_incident_id, fp, None

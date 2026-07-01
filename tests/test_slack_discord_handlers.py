@@ -104,9 +104,9 @@ class TestSlackHandlers:
         client.chat_update = AsyncMock()
 
         with (
-            patch("srebot.bot.slack.handlers.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.slack.handlers.get_agent", return_value=mock_agent),
-            patch("srebot.bot.slack.handlers.get_settings", return_value=mock_settings),
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.llm.agent.get_agent", return_value=mock_agent),
+            patch("srebot.config.get_settings", return_value=mock_settings),
         ):
             await slack_handle_alert_group("fp123", [alert], "C_SLACK", client)
 
@@ -141,11 +141,13 @@ class TestSlackHandlers:
         message = {"text": "<@U_BOT> what is the CPU status?", "user": "U_USER"}
 
         with (
-            patch("srebot.bot.slack.handlers.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.slack.handlers.get_settings", return_value=mock_settings),
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.config.get_settings", return_value=mock_settings),
             patch(
                 "srebot.bot.shared.handle_followup_question",
-                AsyncMock(return_value=("Everything is fine", "incident-999", None)),
+                AsyncMock(
+                    return_value=("Everything is fine", "incident-999", "general_query", None)
+                ),
             ) as mock_fq,
         ):
             message_decorator = app.message()
@@ -181,11 +183,11 @@ class TestSlackHandlers:
         message = {"text": "<@U_BOT> what is the CPU status?", "user": "U_USER"}
 
         with (
-            patch("srebot.bot.slack.handlers.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.slack.handlers.get_settings", return_value=mock_settings),
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.config.get_settings", return_value=mock_settings),
             patch(
                 "srebot.bot.shared.handle_followup_question",
-                AsyncMock(return_value=("", None, RejectionReason.COOLDOWN)),
+                AsyncMock(return_value=("", None, None, RejectionReason.COOLDOWN)),
             ),
         ):
             message_decorator = app.message()
@@ -206,8 +208,8 @@ class TestSlackHandlers:
         message = {"text": "/mute@srebot 1h", "user": "U_USER"}
 
         with (
-            patch("srebot.bot.slack.handlers.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.slack.handlers.get_settings", return_value=mock_settings),
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.config.get_settings", return_value=mock_settings),
             patch(
                 "srebot.bot.commands.handle_command", AsyncMock(return_value="Muted globally")
             ) as mock_hc,
@@ -235,8 +237,8 @@ class TestSlackHandlers:
         message = {"text": "/mute@otherbot 1h", "user": "U_USER"}
 
         with (
-            patch("srebot.bot.slack.handlers.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.slack.handlers.get_settings", return_value=mock_settings),
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.config.get_settings", return_value=mock_settings),
             patch("srebot.bot.commands.handle_command", AsyncMock(return_value=None)) as mock_hc,
         ):
             message_decorator = app.message()
@@ -263,11 +265,12 @@ class TestDiscordHandlers:
         placeholder.id = 5555
         placeholder.edit = AsyncMock()
         message.reply = AsyncMock(return_value=placeholder)
+        message.channel.fetch_message = AsyncMock(return_value=placeholder)
 
         with (
-            patch("srebot.bot.discord.handlers.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.discord.handlers.get_agent", return_value=mock_agent),
-            patch("srebot.bot.discord.handlers.get_settings", return_value=mock_settings),
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.llm.agent.get_agent", return_value=mock_agent),
+            patch("srebot.config.get_settings", return_value=mock_settings),
         ):
             await discord_handle_alert_group("fp123", [alert], message)
 
@@ -318,11 +321,11 @@ class TestDiscordHandlers:
         message.reply = AsyncMock(return_value=indicator)
 
         with (
-            patch("srebot.bot.discord.handlers.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.discord.handlers.get_settings", return_value=mock_settings),
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.config.get_settings", return_value=mock_settings),
             patch(
                 "srebot.bot.shared.handle_followup_question",
-                AsyncMock(return_value=("Memory is normal", "incident-888", None)),
+                AsyncMock(return_value=("Memory is normal", "incident-888", "general_query", None)),
             ) as mock_fq,
         ):
             await on_message_func(message)
@@ -356,8 +359,8 @@ class TestDiscordHandlers:
             del message.chat_id
 
         with (
-            patch("srebot.bot.discord.handlers.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.discord.handlers.get_settings", return_value=mock_settings),
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.config.get_settings", return_value=mock_settings),
             patch(
                 "srebot.bot.commands.handle_command", AsyncMock(return_value="Muted globally")
             ) as mock_hc,
@@ -386,8 +389,8 @@ class TestDiscordHandlers:
             del message.chat_id
 
         with (
-            patch("srebot.bot.discord.handlers.get_store", AsyncMock(return_value=mock_store)),
-            patch("srebot.bot.discord.handlers.get_settings", return_value=mock_settings),
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.config.get_settings", return_value=mock_settings),
             patch("srebot.bot.commands.handle_command", AsyncMock(return_value=None)) as mock_hc,
         ):
             await on_message_func(message)

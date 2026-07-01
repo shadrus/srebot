@@ -165,6 +165,8 @@ class AlertStore:
         value = await self._redis.get(f"followup:bymsid:{message_id}")
         if not value:
             return None
+        if isinstance(value, bytes):
+            value = value.decode("utf-8")
         try:
             if value.startswith("{"):
                 return json.loads(value)
@@ -202,7 +204,8 @@ class AlertStore:
         """
         Get the last active incident fingerprint for a chat.
         """
-        return await self._redis.get(f"last_incident:{chat_id}")
+        val = await self._redis.get(f"last_incident:{chat_id}")
+        return val.decode("utf-8") if isinstance(val, bytes) else val
 
     async def update_followup_context_incident_id(self, fingerprint: str, incident_id: str) -> None:
         """
@@ -224,6 +227,24 @@ class AlertStore:
             )
         except Exception as e:
             logger.warning("Failed to update followup context incident_id: %s", e)
+
+    async def update_followup_context_rca_text(self, fingerprint: str, rca_text: str) -> None:
+        """
+        Update the rca_text inside the followup context for a fingerprint.
+        Useful when an alert was triggered on-demand and we need to save the first analysis result.
+        """
+        key = f"alert:followup:{fingerprint}"
+        value = await self._redis.get(key)
+        if not value:
+            return
+        try:
+            data = json.loads(value)
+            data["rca_text"] = rca_text
+            ttl = await self._redis.ttl(key)
+            await self._redis.set(key, json.dumps(data), ex=max(ttl, 1))
+            logger.debug("Updated followup context for %s with new rca_text", fingerprint)
+        except Exception as e:
+            logger.warning("Failed to update followup context rca_text: %s", e)
 
     async def increment_followup_turns(self, fingerprint: str) -> int:
         """

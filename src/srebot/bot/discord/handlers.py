@@ -5,11 +5,11 @@ import logging
 import discord
 from discord.ext import commands
 
-from srebot.bot.shared import process_alert_text
-from srebot.config import Settings, get_settings
-from srebot.llm.agent import get_agent
-from srebot.parser.alert_parser import Alert, AlertStatus
-from srebot.state.store import get_store
+import srebot.config as config
+import srebot.state.store as state_store
+from srebot.bot.shared import ChatAdapter, process_alert_text
+from srebot.config import Settings
+from srebot.parser.alert_parser import Alert
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +33,120 @@ MESSAGES = {
 
 
 def get_msg(key: str) -> str:
-    lang = get_settings().llm_response_language
+    lang = config.get_settings().llm_response_language
     return MESSAGES.get(lang, MESSAGES["English"]).get(key, "")
+
+
+class DiscordChatAdapter(ChatAdapter):
+    def __init__(self, message: discord.Message, dry_run: bool):
+        self.message = message
+        self.dry_run = dry_run
+
+    def get_chat_id(self) -> str:
+        return f"discord:{self.message.channel.id}"
+
+    async def send_resolved(
+        self, label: str, primary: Alert, current_status: str, reply_to_id: str | None
+    ) -> None:
+        text = (
+            f"✅ **Resolved:** `{primary.alertname}`\n"
+            f"**Cluster:** {primary.cluster} | "
+            f"**Job:** {primary.labels.get('job', '—')}"
+        )
+        if self.dry_run:
+            logger.info("[DRY-RUN] Would send Discord message:\n%s", text)
+        else:
+            try:
+                await self.message.reply(text)
+            except Exception as exc:
+                logger.warning("Could not send resolved reply: %s", exc)
+
+    async def send_short_notification(
+        self, group_fp: str, label: str, primary: Alert
+    ) -> str | int | None:
+        msg_text = (
+            f"🚨 **New Alert:** `{primary.alertname}`\n"
+            f"**Cluster:** {primary.cluster} | "
+            f"**Job:** {primary.labels.get('job', '—')}\n\n"
+            f"*💬 Reply to this message to run AI analysis.*"
+        )
+        if self.dry_run:
+            logger.info("[DRY-RUN] Short notification: %s", msg_text)
+            return None
+
+        try:
+            placeholder = await self.message.reply(msg_text)
+            return str(placeholder.id)
+        except Exception as exc:
+            logger.error("Failed to send short notification: %s", exc)
+            return None
+
+    async def send_analyzing_placeholder(
+        self, group_fp: str, label: str, primary: Alert, alert_count: int
+    ) -> str | int | None:
+        if self.dry_run:
+            logger.info(
+                "[DRY-RUN] Analyzing group %s: %d alert(s) (no Discord placeholder sent)",
+                group_fp,
+                alert_count,
+            )
+            return None
+
+        try:
+            placeholder = await self.message.reply(
+                get_msg("analyzing_alerts").format(count=alert_count) + "\n"
+                f"`{primary.alertname}` · {primary.cluster} · {primary.labels.get('job', '')}"
+            )
+            return str(placeholder.id)
+        except Exception as exc:
+            logger.error("Failed to send placeholder reply: %s", exc)
+            return None
+
+    async def update_with_analysis(
+        self, group_fp: str, placeholder_id: str | int | None, analysis: str, is_billing_error: bool
+    ) -> str | int | None:
+        if not is_billing_error:
+            ttl_hours = config.get_settings().followup_ttl // 3600
+            analysis += get_msg("ttl_footer").format(hours=ttl_hours)
+
+        if placeholder_id is None:
+            if not self.dry_run:
+                try:
+                    # Discord message limit is 2000 chars, truncate if necessary
+                    if len(analysis) > 1900:
+                        analysis = analysis[:1900] + "... (truncated)"
+                    new_msg = await self.message.reply(analysis)
+                    return str(new_msg.id)
+                except Exception as exc2:
+                    logger.error("Could not send analysis reply: %s", exc2)
+                    return None
+            return None
+
+        # Try to fetch the original placeholder message by id in order to edit it
+        try:
+            channel = self.message.channel
+            placeholder = await channel.fetch_message(int(placeholder_id))
+        except Exception as exc:
+            logger.warning("Could not fetch placeholder %s for edit: %s", placeholder_id, exc)
+            placeholder = None
+
+        if len(analysis) > 1900:
+            analysis = analysis[:1900] + "... (truncated)"
+
+        if placeholder:
+            try:
+                await placeholder.edit(content=analysis)
+                return placeholder_id
+            except Exception as exc:
+                logger.warning("Could not edit placeholder (%s), sending new message", exc)
+
+        # Fallback to replying
+        try:
+            new_msg = await self.message.reply(analysis)
+            return str(new_msg.id)
+        except Exception as exc2:
+            logger.error("Total failure sending analysis reply: %s", exc2)
+            return None
 
 
 async def _handle_alert_group(
@@ -44,139 +156,13 @@ async def _handle_alert_group(
 ) -> None:
     """
     Process a group of related alerts as a single analysis.
-    All alerts share the same alertname + cluster + job.
+    Delegates to shared workflow.
     """
-    settings = get_settings()
-    dry_run = settings.dry_run
-    store = await get_store()
-    agent = get_agent()
+    from srebot.bot.shared import execute_alert_group_workflow
 
-    # Use the first alert as the representative for status/metadata
-    primary = alerts[0]
-    label = f"{primary.alertname} ({primary.cluster}/{primary.labels.get('job', '')})"
-
-    # --- RESOLVED ---
-    if primary.status == AlertStatus.RESOLVED:
-        current_status = await store.get_status(group_fp)
-        reply_to_id = await store.get_reply_message_id(group_fp)
-
-        await store.mark_resolved(group_fp)
-        logger.info("Resolved group [%s]: %s (was %s)", group_fp, label, current_status)
-
-        # Notify if we were tracking this alert (firing or analyzing)
-        if current_status in ("firing", "analyzing") or reply_to_id:
-            text = (
-                f"✅ **Resolved:** `{primary.alertname}`\n"
-                f"**Cluster:** {primary.cluster} | "
-                f"**Job:** {primary.labels.get('job', '—')}"
-            )
-            if dry_run:
-                logger.info("[DRY-RUN] Would send Discord message:\n%s", text)
-            else:
-                try:
-                    # Reply to the original message if possible
-                    await message.reply(text)
-                except Exception as exc:
-                    logger.warning("Could not send resolved reply: %s", exc)
-        return
-
-    # --- FIRING ---
-    if not await store.is_new(group_fp):
-        logger.info("Duplicate firing group (skip): %s [%s]", label, group_fp)
-        return
-
-    logger.info("New firing group [%s]: %s (%d alert(s))", group_fp, label, len(alerts))
-
-    # Send placeholder
-    placeholder = None
-    if not dry_run:
-        try:
-            placeholder = await message.reply(
-                get_msg("analyzing_alerts").format(count=len(alerts)) + "\n"
-                f"`{primary.alertname}` · {primary.cluster} · {primary.labels.get('job', '')}"
-            )
-            # Mark as ANALYZING so concurrent RESOLVED messages know we are on it
-            await store.mark_analyzing(group_fp, str(placeholder.id))
-        except Exception as exc:
-            logger.error("Failed to send placeholder reply: %s", exc)
-            return
-    else:
-        logger.info(
-            "[DRY-RUN] Analyzing group %s: %d alert(s) (no Discord placeholder sent)",
-            group_fp,
-            len(alerts),
-        )
-        await store.mark_analyzing(group_fp, "0")
-
-    # Run LLM analysis
-    try:
-        analysis, incident_id = await agent.analyze(alerts)
-    except Exception as exc:
-        logger.exception("LLM analysis failed for group %s", group_fp)
-        analysis = f"⚠️ **Analysis failed:** `{exc}`\nPlease investigate manually."
-        incident_id = None
-
-    # Append TTL footer if not a billing error
-    is_billing_error = (
-        "insufficient balance" in analysis.lower() or "недостаточно баланса" in analysis.lower()
-    )
-    if not is_billing_error:
-        ttl_hours = get_settings().followup_ttl // 3600
-        analysis += get_msg("ttl_footer").format(hours=ttl_hours)
-
-    # Check if the alert was resolved while we were analyzing
-    current_status = await store.get_status(group_fp)
-
-    if dry_run:
-        logger.info("[DRY-RUN] Analysis result for group %s:\n%s", group_fp, analysis)
-        if current_status == "analyzing":
-            await store.mark_firing(group_fp, reply_message_id="0")
-        return
-
-    # ALWAYS update the UI with findings, even if already resolved
-    try:
-        # Discord message limit is 2000 chars, truncate if necessary
-        if len(analysis) > 1900:
-            analysis = analysis[:1900] + "... (truncated)"
-
-        await placeholder.edit(content=analysis)
-    except Exception as exc:
-        logger.warning("Could not edit placeholder (%s), sending new message", exc)
-        try:
-            new_msg = await message.reply(analysis)
-            placeholder = new_msg
-        except Exception as exc2:
-            logger.error("Total failure sending analysis reply: %s", exc2)
-            return
-
-    # Only restore FIRING state if it wasn't cleared by a RESOLVED message
-    if current_status == "analyzing":
-        await store.mark_firing(group_fp, str(placeholder.id))
-
-        # Save follow-up context
-        alert_data = [
-            {
-                "status": a.status,
-                "alertname": a.alertname,
-                "cluster": a.cluster,
-                "namespace": a.namespace,
-                "severity": a.severity,
-                "labels": a.labels,
-                "annotations": a.annotations,
-                "fingerprint": a.fingerprint,
-                "source_url": a.source_url,
-            }
-            for a in alerts
-        ]
-        await store.save_followup_context(group_fp, analysis, alert_data, incident_id=incident_id)
-        await store.register_bot_message(str(placeholder.id), group_fp, incident_id=incident_id)
-        await store.set_last_active_incident(f"discord:{message.channel.id}", group_fp)
-    else:
-        logger.info(
-            "Alert %s was %s during analysis. Not marking as firing.",
-            group_fp,
-            current_status,
-        )
+    dry_run = config.get_settings().dry_run
+    adapter = DiscordChatAdapter(message, dry_run)
+    await execute_alert_group_workflow(group_fp, alerts, adapter, dry_run)
 
 
 def clean_mentions(text: str, bot_id: int | None, bot_name: str | None) -> str:
@@ -269,7 +255,7 @@ def register_handlers(bot: commands.Bot, settings: Settings) -> None:
                 except Exception as exc:
                     logger.warning("Could not send Discord follow-up typing indicator: %s", exc)
 
-            answer, new_incident_id, rejection = await handle_followup_question(
+            answer, new_incident_id, fp_used, rejection = await handle_followup_question(
                 reply_to_id=reply_to_id,
                 question=cleaned_text,
                 user_id=user_id,
@@ -288,24 +274,12 @@ def register_handlers(bot: commands.Bot, settings: Settings) -> None:
                         else:
                             final_msg = await message.reply(safe_answer)
 
-                        if final_msg and new_incident_id:
-                            store = await get_store()
-                            fingerprint = None
-                            if reply_to_id:
-                                fingerprint = await store.get_fp_by_message_id(reply_to_id)
-                            if not fingerprint and chat_id:
-                                last_fp = await store.get_last_active_incident(chat_id)
-                                if last_fp:
-                                    ctx = await store.get_followup_context(last_fp)
-                                    if ctx:
-                                        fingerprint = last_fp
-                            if not fingerprint:
-                                fingerprint = "general_query"
-
+                        if final_msg and new_incident_id and fp_used:
+                            store = await state_store.get_store()
                             await store.register_bot_message(
-                                str(final_msg.id), fingerprint, incident_id=new_incident_id
+                                str(final_msg.id), fp_used, incident_id=new_incident_id
                             )
-                            await store.set_last_active_incident(chat_id, fingerprint)
+                            await store.set_last_active_incident(chat_id, fp_used)
                     except Exception as exc:
                         logger.warning("Could not send Discord follow-up answer: %s", exc)
                 else:

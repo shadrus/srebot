@@ -6,11 +6,11 @@ import re
 from slack_bolt.async_app import AsyncApp
 from slack_sdk.web.async_client import AsyncWebClient
 
-from srebot.bot.shared import process_alert_text
-from srebot.config import Settings, get_settings
-from srebot.llm.agent import get_agent
-from srebot.parser.alert_parser import Alert, AlertStatus
-from srebot.state.store import get_store
+import srebot.config as config
+import srebot.state.store as state_store
+from srebot.bot.shared import ChatAdapter, process_alert_text
+from srebot.config import Settings
+from srebot.parser.alert_parser import Alert
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ MESSAGES = {
 
 
 def get_msg(key: str) -> str:
-    lang = get_settings().llm_response_language
+    lang = config.get_settings().llm_response_language
     return MESSAGES.get(lang, MESSAGES["English"]).get(key, "")
 
 
@@ -58,6 +58,113 @@ def _markdown_to_slack(text: str) -> str:
     return text
 
 
+class SlackChatAdapter(ChatAdapter):
+    def __init__(self, channel_id: str, client: AsyncWebClient, dry_run: bool):
+        self.channel_id = channel_id
+        self.client = client
+        self.dry_run = dry_run
+
+    def get_chat_id(self) -> str:
+        return f"slack:{self.channel_id}"
+
+    async def send_resolved(
+        self, label: str, primary: Alert, current_status: str, reply_to_id: str | None
+    ) -> None:
+        text = (
+            f"✅ *Resolved:* `{primary.alertname}`\n"
+            f"*Cluster:* {primary.cluster} | "
+            f"*Job:* {primary.labels.get('job', '—')}"
+        )
+        if self.dry_run:
+            logger.info("[DRY-RUN] Would send Slack message:\n%s", text)
+        else:
+            try:
+                await self.client.chat_postMessage(
+                    channel=self.channel_id,
+                    text=text,
+                    thread_ts=reply_to_id if reply_to_id else None,
+                )
+            except Exception as exc:
+                logger.warning("Could not send resolved reply: %s", exc)
+
+    async def send_short_notification(
+        self, group_fp: str, label: str, primary: Alert
+    ) -> str | int | None:
+        msg_text = (
+            f"🚨 *New Alert:* `{primary.alertname}`\n"
+            f"*Cluster:* {primary.cluster} | "
+            f"*Job:* {primary.labels.get('job', '—')}\n\n"
+            f"_💬 Reply to this message to run AI analysis._"
+        )
+        if self.dry_run:
+            logger.info("[DRY-RUN] Short notification: %s", msg_text)
+            return None
+
+        try:
+            res = await self.client.chat_postMessage(channel=self.channel_id, text=msg_text)
+            return res["ts"]
+        except Exception as exc:
+            logger.error("Failed to send short notification: %s", exc)
+            return None
+
+    async def send_analyzing_placeholder(
+        self, group_fp: str, label: str, primary: Alert, alert_count: int
+    ) -> str | int | None:
+        if self.dry_run:
+            logger.info("[DRY-RUN] Analyzing group %s: %d alert(s)", group_fp, alert_count)
+            return None
+
+        try:
+            res = await self.client.chat_postMessage(
+                channel=self.channel_id,
+                text=(
+                    get_msg("analyzing_alerts").format(count=alert_count)
+                    + f"\n`{primary.alertname}` · {primary.cluster} · "
+                    f"{primary.labels.get('job', '')}"
+                ),
+            )
+            return res["ts"]
+        except Exception as exc:
+            logger.error("Failed to send placeholder reply: %s", exc)
+            return None
+
+    async def update_with_analysis(
+        self, group_fp: str, placeholder_id: str | int | None, analysis: str, is_billing_error: bool
+    ) -> str | int | None:
+        # Convert Markdown to Slack mrkdwn
+        analysis = _markdown_to_slack(analysis)
+
+        if not is_billing_error:
+            ttl_hours = config.get_settings().followup_ttl // 3600
+            analysis += get_msg("ttl_footer").format(hours=ttl_hours)
+
+        if placeholder_id is None:
+            if not self.dry_run:
+                try:
+                    res = await self.client.chat_postMessage(channel=self.channel_id, text=analysis)
+                    return res["ts"]
+                except Exception as exc2:
+                    logger.error("Could not send analysis reply: %s", exc2)
+                    return None
+            return None
+
+        try:
+            await self.client.chat_update(
+                channel=self.channel_id,
+                ts=placeholder_id,  # type: ignore[arg-type]
+                text=analysis,
+            )
+            return placeholder_id
+        except Exception as exc:
+            logger.warning("Could not edit placeholder (%s), sending new message", exc)
+            try:
+                res = await self.client.chat_postMessage(channel=self.channel_id, text=analysis)
+                return res["ts"]
+            except Exception as exc2:
+                logger.error("Could not send analysis reply: %s", exc2)
+                return None
+
+
 async def _handle_alert_group(
     group_fp: str,
     alerts: list[Alert],
@@ -66,146 +173,13 @@ async def _handle_alert_group(
 ) -> None:
     """
     Process a group of related alerts as a single analysis.
-
-    Args:
-        group_fp: Fingerprint identifying this alert group.
-        alerts: List of alerts belonging to the group.
-        channel_id: Slack channel ID to post messages to.
-        client: Slack async web client instance.
+    Delegates to shared workflow.
     """
-    dry_run = get_settings().dry_run
-    store = await get_store()
-    agent = get_agent()
+    from srebot.bot.shared import execute_alert_group_workflow
 
-    primary = alerts[0]
-    label = f"{primary.alertname} ({primary.cluster}/{primary.labels.get('job', '')})"
-
-    # --- RESOLVED ---
-    if primary.status == AlertStatus.RESOLVED:
-        current_status = await store.get_status(group_fp)
-        reply_to_ts = await store.get_reply_message_id(group_fp)
-
-        await store.mark_resolved(group_fp)
-        logger.info("Resolved group [%s]: %s (was %s)", group_fp, label, current_status)
-
-        if current_status in ("firing", "analyzing") or reply_to_ts:
-            text = (
-                f"✅ *Resolved:* `{primary.alertname}`\n"
-                f"*Cluster:* {primary.cluster} | "
-                f"*Job:* {primary.labels.get('job', '—')}"
-            )
-            if dry_run:
-                logger.info("[DRY-RUN] Would send Slack message:\n%s", text)
-            else:
-                try:
-                    await client.chat_postMessage(
-                        channel=channel_id,
-                        text=text,
-                        thread_ts=reply_to_ts if reply_to_ts else None,
-                    )
-                except Exception as exc:
-                    logger.warning("Could not send resolved reply: %s", exc)
-        return
-    # --- FIRING ---
-    if not await store.is_new(group_fp):
-        logger.info("Duplicate firing group (skip): %s [%s]", label, group_fp)
-        return
-
-    logger.info("New firing group [%s]: %s (%d alert(s))", group_fp, label, len(alerts))
-
-    placeholder_ts = None
-    if not dry_run:
-        try:
-            res = await client.chat_postMessage(
-                channel=channel_id,
-                text=(
-                    get_msg("analyzing_alerts").format(count=len(alerts))
-                    + f"\n`{primary.alertname}` · {primary.cluster} · "
-                    f"{primary.labels.get('job', '')}"
-                ),
-            )
-            placeholder_ts = res["ts"]
-            # Mark as ANALYZING so concurrent RESOLVED messages know we are on it
-            await store.mark_analyzing(group_fp, placeholder_ts)
-        except Exception as exc:
-            logger.error("Failed to send placeholder reply: %s", exc)
-            return
-    else:
-        logger.info("[DRY-RUN] Analyzing group %s: %d alert(s)", group_fp, len(alerts))
-        await store.mark_analyzing(group_fp, "0")
-
-    # Run LLM analysis
-    try:
-        analysis, incident_id = await agent.analyze(alerts)
-    except Exception as exc:
-        logger.exception("LLM analysis failed for group %s", group_fp)
-        analysis = f"⚠️ *Analysis failed:* `{exc}`\nPlease investigate manually."
-        incident_id = None
-
-    # Convert Markdown to Slack mrkdwn
-    analysis = _markdown_to_slack(analysis)
-
-    # Append TTL footer if not a billing error
-    is_billing_error = (
-        "insufficient balance" in analysis.lower() or "недостаточно баланса" in analysis.lower()
-    )
-    if not is_billing_error:
-        ttl_hours = get_settings().followup_ttl // 3600
-        analysis += get_msg("ttl_footer").format(hours=ttl_hours)
-
-    # Check if the alert was resolved while we were analyzing
-    current_status = await store.get_status(group_fp)
-
-    if dry_run:
-        logger.info("[DRY-RUN] Analysis result for group %s:\n%s", group_fp, analysis)
-        if current_status == "analyzing":
-            await store.mark_firing(group_fp, reply_message_id="0")
-        return
-
-    # ALWAYS update the UI with findings, even if already resolved
-    try:
-        await client.chat_update(
-            channel=channel_id,
-            ts=placeholder_ts,  # type: ignore[arg-type]
-            text=analysis,
-        )
-    except Exception as exc:
-        logger.warning("Could not edit placeholder (%s), sending new message", exc)
-        try:
-            res = await client.chat_postMessage(channel=channel_id, text=analysis)
-            placeholder_ts = res["ts"]
-        except Exception as exc2:
-            logger.error("Could not send analysis reply: %s", exc2)
-            return
-
-    # Only restore FIRING state if it wasn't cleared by a RESOLVED message
-    if current_status == "analyzing":
-        await store.mark_firing(group_fp, placeholder_ts)  # type: ignore[arg-type]
-
-        # Save follow-up context
-        alert_data = [
-            {
-                "status": a.status,
-                "alertname": a.alertname,
-                "cluster": a.cluster,
-                "namespace": a.namespace,
-                "severity": a.severity,
-                "labels": a.labels,
-                "annotations": a.annotations,
-                "fingerprint": a.fingerprint,
-                "source_url": a.source_url,
-            }
-            for a in alerts
-        ]
-        await store.save_followup_context(group_fp, analysis, alert_data, incident_id=incident_id)
-        await store.register_bot_message(str(placeholder_ts), group_fp, incident_id=incident_id)
-        await store.set_last_active_incident(f"slack:{channel_id}", group_fp)
-    else:
-        logger.info(
-            "Alert %s was %s during analysis. Not marking as firing.",
-            group_fp,
-            current_status,
-        )
+    dry_run = config.get_settings().dry_run
+    adapter = SlackChatAdapter(channel_id, client, dry_run)
+    await execute_alert_group_workflow(group_fp, alerts, adapter, dry_run)
 
 
 bot_user_id = None
@@ -361,7 +335,7 @@ def register_handlers(app: AsyncApp, settings: Settings) -> None:
                 except Exception as exc:
                     logger.warning("Could not send Slack follow-up typing indicator: %s", exc)
 
-            answer, new_incident_id, rejection = await handle_followup_question(
+            answer, new_incident_id, fp_used, rejection = await handle_followup_question(
                 reply_to_id=thread_ts,
                 question=cleaned_text,
                 user_id=str(user_id),
@@ -388,24 +362,12 @@ def register_handlers(app: AsyncApp, settings: Settings) -> None:
                             )
                             final_msg_ts = res["ts"]
 
-                        if final_msg_ts and new_incident_id:
-                            store = await get_store()
-                            fingerprint = None
-                            if thread_ts:
-                                fingerprint = await store.get_fp_by_message_id(str(thread_ts))
-                            if not fingerprint and chat_id:
-                                last_fp = await store.get_last_active_incident(chat_id)
-                                if last_fp:
-                                    ctx = await store.get_followup_context(last_fp)
-                                    if ctx:
-                                        fingerprint = last_fp
-                            if not fingerprint:
-                                fingerprint = "general_query"
-
+                        if final_msg_ts and new_incident_id and fp_used:
+                            store = await state_store.get_store()
                             await store.register_bot_message(
-                                str(final_msg_ts), fingerprint, incident_id=new_incident_id
+                                str(final_msg_ts), fp_used, incident_id=new_incident_id
                             )
-                            await store.set_last_active_incident(chat_id, fingerprint)
+                            await store.set_last_active_incident(chat_id, fp_used)
                     except Exception as exc:
                         logger.warning("Could not send Slack follow-up answer: %s", exc)
                 else:

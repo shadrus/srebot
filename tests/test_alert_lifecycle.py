@@ -27,11 +27,13 @@ def mock_agent():
 
 @pytest.fixture
 def mock_message():
-    msg = AsyncMock()
-    msg.message_id = 100
-    placeholder = AsyncMock()
-    placeholder.message_id = 101
-    msg.reply_text = AsyncMock(return_value=placeholder)
+    from unittest.mock import AsyncMock, MagicMock
+
+    msg = MagicMock()
+    msg.reply_text = AsyncMock()
+    bot_mock = MagicMock()
+    bot_mock.edit_message_text = AsyncMock()
+    msg.get_bot = MagicMock(return_value=bot_mock)
     return msg
 
 
@@ -88,12 +90,12 @@ async def test_concurrent_resolution_during_analysis(mock_store, mock_agent, moc
 
     mock_agent.analyze.side_effect = slow_analyze
 
-    # PATH TO PATCH: srebot.bot.telegram.handlers.get_store/agent/settings
+    # PATH TO PATCH: srebot.bot.shared.get_store/agent/settings
     with (
-        patch("srebot.bot.telegram.handlers.get_store", AsyncMock(return_value=mock_store)),
-        patch("srebot.bot.telegram.handlers.get_agent", return_value=mock_agent),
+        patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+        patch("srebot.llm.agent.get_agent", return_value=mock_agent),
         patch(
-            "srebot.bot.telegram.handlers.get_settings",
+            "srebot.config.get_settings",
             return_value=MagicMock(dry_run=False, followup_ttl=3600),
         ),
     ):
@@ -118,10 +120,9 @@ async def test_concurrent_resolution_during_analysis(mock_store, mock_agent, moc
 
     # Verify that:
     # 1. UI was updated with analysis anyway
-    placeholder = mock_message.reply_text.return_value
-    assert placeholder.edit_text.call_count == 1
-    call_args = placeholder.edit_text.call_args
-    assert call_args[0][0].startswith("<b>Full Analysis</b>")
+    assert mock_message.get_bot().edit_message_text.call_count == 1
+    call_args = mock_message.get_bot().edit_message_text.call_args
+    assert call_args[1]["text"].startswith("<b>Full Analysis</b>")
     assert call_args[1].get("parse_mode") == ANY_PARSE_MODE
 
     # 2. mark_firing was NOT called because status was not 'analyzing'
