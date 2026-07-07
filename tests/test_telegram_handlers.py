@@ -168,7 +168,6 @@ class TestHandleAlertGroupFiring:
 
         # placeholder sent
         mock_message.reply_text.assert_called_once()
-        placeholder = mock_message.reply_text.return_value
         # then edited with analysis
         bot_mock = mock_message.get_bot()
         bot_mock.edit_message_text.assert_called_once()
@@ -213,7 +212,6 @@ class TestHandleAlertGroupFiring:
         ):
             await _handle_alert_group("fp123", [alert], mock_message)
 
-        placeholder = mock_message.reply_text.return_value
         edited_text = mock_message.get_bot().edit_message_text.call_args[1]["text"]
         assert "Analysis failed" in edited_text
 
@@ -221,7 +219,6 @@ class TestHandleAlertGroupFiring:
         self, mock_store, mock_agent, mock_message
     ):
         alert = _firing_alert()
-        placeholder = mock_message.reply_text.return_value
         mock_message.get_bot().edit_message_text.side_effect = Exception("edit failed")
         with (
             patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),

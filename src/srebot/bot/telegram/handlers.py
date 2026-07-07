@@ -27,8 +27,15 @@ MESSAGES = {
         "analyzing_followup": "🔍 <i>Анализирую...</i>",
         "cooldown": "⏳ <i>Подождите немного перед следующим вопросом.</i>",
         "limit_reached": "🔒 <i>Лимит уточняющих вопросов по этому инциденту исчерпан ({current}/{max}).</i>",  # noqa: E501
-        "resolved_alert": "✅ <b>Решено:</b> <code>{alertname}</code>\n<b>Кластер:</b> {cluster} | <b>Job:</b> {job}",
-        "new_alert": "🚨 <b>Новый алерт:</b> <code>{alertname}</code>\n<b>Кластер:</b> {cluster} | <b>Job:</b> {job}\n\n<i>💬 Ответьте (Reply) на это сообщение, чтобы запустить AI-анализ.</i>",
+        "resolved_alert": (
+            "✅ <b>Решено:</b> <code>{alertname}</code>\n"
+            "<b>Кластер:</b> {cluster} | <b>Job:</b> {job}"
+        ),
+        "new_alert": (
+            "🚨 <b>Новый алерт:</b> <code>{alertname}</code>\n"
+            "<b>Кластер:</b> {cluster} | <b>Job:</b> {job}\n\n"
+            "<i>💬 Ответьте (Reply) на это сообщение, чтобы запустить AI-анализ.</i>"
+        ),
     },
     "English": {
         "analyzing_alerts": "🔍 <b>Analyzing {count} alert(s)…</b>",
@@ -36,8 +43,15 @@ MESSAGES = {
         "analyzing_followup": "🔍 <i>Analyzing...</i>",
         "cooldown": "⏳ <i>Please wait a bit before the next question.</i>",
         "limit_reached": "🔒 <i>Limit of follow-up questions for this incident reached ({current}/{max}).</i>",  # noqa: E501
-        "resolved_alert": "✅ <b>Resolved:</b> <code>{alertname}</code>\n<b>Cluster:</b> {cluster} | <b>Job:</b> {job}",
-        "new_alert": "🚨 <b>New Alert:</b> <code>{alertname}</code>\n<b>Cluster:</b> {cluster} | <b>Job:</b> {job}\n\n<i>💬 Reply to this message to run AI analysis.</i>",
+        "resolved_alert": (
+            "✅ <b>Resolved:</b> <code>{alertname}</code>\n"
+            "<b>Cluster:</b> {cluster} | <b>Job:</b> {job}"
+        ),
+        "new_alert": (
+            "🚨 <b>New Alert:</b> <code>{alertname}</code>\n"
+            "<b>Cluster:</b> {cluster} | <b>Job:</b> {job}\n\n"
+            "<i>💬 Reply to this message to run AI analysis.</i>"
+        ),
     },
 }
 
@@ -405,7 +419,7 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         bot_username = bot_info.username
         bot_first_name = bot_info.first_name
     except Exception:
-        pass
+        logger.exception("Could not fetch Telegram bot details while checking mention")
 
     is_mention = False
     if bot_username and f"@{bot_username}" in msg.text:

@@ -77,11 +77,11 @@ class ExternalMCPClient:
                 return json.dumps({"error": content or "Unknown tool error"})
 
             return content
-        except Exception as e:
-            error_msg = str(e)
+        except Exception as exc:
+            error_msg = str(exc)
             if not error_msg:
-                error_msg = type(e).__name__
-            logger.error("Error calling external MCP tool %s: %s", name, error_msg)
+                error_msg = type(exc).__name__
+            logger.exception("Error calling external MCP tool %s", name)
             return json.dumps({"error": error_msg})
 
     async def close(self):

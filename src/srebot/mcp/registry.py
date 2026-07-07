@@ -324,7 +324,10 @@ async def shutdown_mcp():
         try:
             await client.close()
         except BaseException:
-            pass  # Process is shutting down — cancel-scope cleanup is not critical
+            logger.debug(
+                "Ignoring MCP client close failure during shutdown",
+                exc_info=True,
+            )
     _EXTERNAL_CLIENTS.clear()
     _EXTERNAL_TOOL_SCHEMAS.clear()
     _EXTERNAL_TOOL_TO_CLIENT.clear()

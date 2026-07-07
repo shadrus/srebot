@@ -107,9 +107,9 @@ class SaaSWSClient:
                                 except TimeoutError:
                                     logger.error("Tool %s timed out after 60s", t_name)
                                     result_str = "Error: Tool execution timed out after 60s"
-                                except Exception as e:
-                                    logger.error("Tool %s failed: %s", t_name, e)
-                                    result_str = f"Error: {e}"
+                                except Exception as exc:
+                                    logger.exception("Tool %s failed", t_name)
+                                    result_str = f"Error: {exc}"
 
                                 return {"tool_call_id": t_id, "data": result_str}
 
@@ -133,9 +133,12 @@ class SaaSWSClient:
                 "⚠️ <b>Analysis timed out:</b> The AI took too long to respond. "
                 "Please investigate manually."
             ), None
-        except Exception as e:
-            logger.error("WebSocket connection to SaaS failed: %s", e)
-            return f"⚠️ Failed to connect to AI Control Plane: {e}", None
+        except json.JSONDecodeError as exc:
+            logger.exception("Invalid JSON received from SaaS during alert analysis")
+            return f"⚠️ Invalid response from AI Control Plane: {exc}", None
+        except Exception as exc:
+            logger.exception("WebSocket connection to SaaS failed during alert analysis")
+            return f"⚠️ Failed to connect to AI Control Plane: {exc}", None
 
     async def analyze_followup(
         self,
@@ -237,9 +240,9 @@ class SaaSWSClient:
                                 except TimeoutError:
                                     logger.error("Tool %s timed out after 60s", t_name)
                                     result_str = "Error: Tool execution timed out after 60s"
-                                except Exception as e:
-                                    logger.error("Tool %s failed: %s", t_name, e)
-                                    result_str = f"Error: {e}"
+                                except Exception as exc:
+                                    logger.exception("Tool %s failed", t_name)
+                                    result_str = f"Error: {exc}"
 
                                 return {"tool_call_id": t_id, "data": result_str}
 
@@ -264,9 +267,12 @@ class SaaSWSClient:
                 "⚠️ <b>Analysis timed out:</b> The AI took too long to respond. Please try again.",
                 None,
             )
-        except Exception as e:
-            logger.error("WebSocket connection to SaaS failed (follow-up): %s", e)
-            return f"⚠️ Failed to connect to AI Control Plane: {e}", None
+        except json.JSONDecodeError as exc:
+            logger.exception("Invalid JSON received from SaaS during follow-up analysis")
+            return f"⚠️ Invalid response from AI Control Plane: {exc}", None
+        except Exception as exc:
+            logger.exception("WebSocket connection to SaaS failed during follow-up analysis")
+            return f"⚠️ Failed to connect to AI Control Plane: {exc}", None
 
     async def extract_alerts(self, text: str) -> list[dict[str, Any]]:
         """Request the SaaS Control Plane to parse raw text into structured Alert objects."""
@@ -304,8 +310,11 @@ class SaaSWSClient:
                     else:
                         logger.warning("Unknown event from SaaS during extraction: %s", event)
                         return []
-        except Exception as e:
-            logger.error("Smart parsing via SaaS failed: %s", e)
+        except json.JSONDecodeError:
+            logger.exception("Invalid JSON received from SaaS during smart parsing")
+            return []
+        except Exception:
+            logger.exception("Smart parsing via SaaS failed")
             return []
 
     async def refresh_strategies(self) -> None:
@@ -319,5 +328,7 @@ class SaaSWSClient:
                 raw = await websocket.recv()
                 msg = json.loads(raw)
                 await self._handle_server_event(msg)
-        except Exception as e:
-            logger.error("Failed to refresh parsing strategies from SaaS: %s", e)
+        except json.JSONDecodeError:
+            logger.exception("Invalid JSON received while refreshing parsing strategies")
+        except Exception:
+            logger.exception("Failed to refresh parsing strategies from SaaS")

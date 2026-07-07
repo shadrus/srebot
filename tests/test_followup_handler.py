@@ -153,7 +153,6 @@ class TestHandleAlertGroupFollowupContext:
         ):
             await _handle_alert_group("fp123", [alert], mock_message)
 
-        placeholder = mock_message.reply_text.return_value
         bot_mock = mock_message.get_bot()
         edited_text = bot_mock.edit_message_text.call_args[1]["text"]
         assert "1 ч." in edited_text or "1" in edited_text or "1 h." in edited_text
@@ -175,7 +174,6 @@ class TestHandleAlertGroupFollowupContext:
         ):
             await _handle_alert_group("fp123", [alert], mock_message)
 
-        placeholder = mock_message.reply_text.return_value
         bot_mock = mock_message.get_bot()
         edited_text = bot_mock.edit_message_text.call_args[1]["text"]
         assert "Задайте уточняющие вопросы" not in edited_text
@@ -198,7 +196,6 @@ class TestHandleAlertGroupFollowupContext:
         ):
             await _handle_alert_group("fp123", [alert], mock_message)
 
-        placeholder = mock_message.reply_text.return_value
         bot_mock = mock_message.get_bot()
         edited_text = bot_mock.edit_message_text.call_args[1]["text"]
         assert "Задайте уточняющие вопросы" not in edited_text

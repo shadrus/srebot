@@ -162,11 +162,12 @@ def update_remote_strategies(strategies_data: list[dict[str, Any]]) -> None:
     global _STRATEGIES
     new_strategies = []
     for s in strategies_data:
+        strategy_name = s.get("name") if isinstance(s, dict) else "<invalid>"
         try:
             new_strategies.append(DynamicStrategy(**s))
-            logger.info("Loaded dynamic parsing strategy: %s", s.get("name"))
-        except Exception as e:
-            logger.error("Failed to load parsing strategy %s: %s", s.get("name"), e)
+            logger.info("Loaded dynamic parsing strategy: %s", strategy_name)
+        except (TypeError, re.error) as exc:
+            logger.warning("Failed to load parsing strategy %s: %s", strategy_name, exc)
 
     # Sort by priority (lower number = higher priority)
     _STRATEGIES = sorted(new_strategies, key=lambda x: x.priority)
@@ -185,7 +186,7 @@ def parse_alert_message(text: str) -> list[Alert]:
             if alerts:
                 logger.debug("Parsed alert using %s strategy", strategy.name)
                 return alerts
-        except Exception as e:
-            logger.warning("Strategy %s failed: %s", strategy.name, e)
+        except IndexError, re.error, TypeError, ValueError:
+            logger.exception("Strategy %s failed while parsing alert text", strategy.name)
 
     return []

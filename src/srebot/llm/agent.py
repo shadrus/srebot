@@ -138,7 +138,7 @@ class AlertAnalysisAgent:
                         source_url=a.get("source_url"),
                     )
                 )
-            except Exception as exc:
+            except (AttributeError, TypeError, ValueError) as exc:
                 logger.warning("Failed to construct Alert from SaaS data: %s | data=%s", exc, a)
 
         return alerts

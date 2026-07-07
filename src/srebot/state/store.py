@@ -10,6 +10,25 @@ from srebot.config import get_settings
 logger = logging.getLogger(__name__)
 
 
+def _decode_redis_value(value: str | bytes) -> str:
+    """Return a Redis value as text."""
+    return value.decode("utf-8") if isinstance(value, bytes) else value
+
+
+def _load_json_dict(value: str | bytes, context: str) -> dict | None:
+    """Parse a Redis JSON object and log malformed payloads."""
+    try:
+        data = json.loads(_decode_redis_value(value))
+    except (json.JSONDecodeError, TypeError) as exc:
+        logger.warning("Invalid JSON in Redis for %s: %s", context, exc)
+        return None
+
+    if not isinstance(data, dict):
+        logger.warning("Invalid Redis payload for %s: expected object, got %s", context, type(data))
+        return None
+    return data
+
+
 class AlertStore:
     """
     Persists alert state in Redis to deduplicate repeated firings.
@@ -37,7 +56,9 @@ class AlertStore:
         value = await self._redis.get(self._key(fingerprint))
         if value is None:
             return True
-        data = json.loads(value)
+        data = _load_json_dict(value, self._key(fingerprint))
+        if data is None:
+            return True
         return data.get("status") not in ("firing", "analyzing")
 
     async def mark_analyzing(
@@ -70,17 +91,16 @@ class AlertStore:
         value = await self._redis.get(self._key(fingerprint))
         if value is None:
             return None
-        return json.loads(value).get("reply_message_id")
+        data = _load_json_dict(value, self._key(fingerprint))
+        return data.get("reply_message_id") if data else None
 
     async def get_status(self, fingerprint: str) -> str | None:
         """Return current status ('firing', 'analyzing') or None (if resolved/expired)."""
         value = await self._redis.get(self._key(fingerprint))
         if value is None:
             return None
-        try:
-            return json.loads(value).get("status")
-        except json.JSONDecodeError, TypeError:
-            return None
+        data = _load_json_dict(value, self._key(fingerprint))
+        return data.get("status") if data else None
 
     async def save_followup_context(
         self,
@@ -126,10 +146,7 @@ class AlertStore:
         value = await self._redis.get(f"alert:followup:{fingerprint}")
         if value is None:
             return None
-        try:
-            return json.loads(value)
-        except json.JSONDecodeError, TypeError:
-            return None
+        return _load_json_dict(value, f"alert:followup:{fingerprint}")
 
     async def register_bot_message(
         self, message_id: int | str, fingerprint: str, incident_id: str | None = None
@@ -165,13 +182,9 @@ class AlertStore:
         value = await self._redis.get(f"followup:bymsid:{message_id}")
         if not value:
             return None
-        if isinstance(value, bytes):
-            value = value.decode("utf-8")
-        try:
-            if value.startswith("{"):
-                return json.loads(value)
-        except Exception:
-            pass
+        value = _decode_redis_value(value)
+        if value.startswith("{"):
+            return _load_json_dict(value, f"followup:bymsid:{message_id}")
         # Fallback for legacy plain fingerprint strings in Redis
         return {"fingerprint": value, "incident_id": None}
 
@@ -205,7 +218,7 @@ class AlertStore:
         Get the last active incident fingerprint for a chat.
         """
         val = await self._redis.get(f"last_incident:{chat_id}")
-        return val.decode("utf-8") if isinstance(val, bytes) else val
+        return _decode_redis_value(val) if val is not None else None
 
     async def update_followup_context_incident_id(self, fingerprint: str, incident_id: str) -> None:
         """
@@ -215,18 +228,17 @@ class AlertStore:
         value = await self._redis.get(key)
         if not value:
             return
-        try:
-            data = json.loads(value)
-            data["incident_id"] = incident_id
-            ttl = await self._redis.ttl(key)
-            await self._redis.set(key, json.dumps(data), ex=max(ttl, 1))
-            logger.debug(
-                "Updated followup context for %s with incident_id %s",
-                fingerprint,
-                incident_id,
-            )
-        except Exception as e:
-            logger.warning("Failed to update followup context incident_id: %s", e)
+        data = _load_json_dict(value, key)
+        if data is None:
+            return
+        data["incident_id"] = incident_id
+        ttl = await self._redis.ttl(key)
+        await self._redis.set(key, json.dumps(data), ex=max(ttl, 1))
+        logger.debug(
+            "Updated followup context for %s with incident_id %s",
+            fingerprint,
+            incident_id,
+        )
 
     async def update_followup_context_rca_text(self, fingerprint: str, rca_text: str) -> None:
         """
@@ -237,14 +249,13 @@ class AlertStore:
         value = await self._redis.get(key)
         if not value:
             return
-        try:
-            data = json.loads(value)
-            data["rca_text"] = rca_text
-            ttl = await self._redis.ttl(key)
-            await self._redis.set(key, json.dumps(data), ex=max(ttl, 1))
-            logger.debug("Updated followup context for %s with new rca_text", fingerprint)
-        except Exception as e:
-            logger.warning("Failed to update followup context rca_text: %s", e)
+        data = _load_json_dict(value, key)
+        if data is None:
+            return
+        data["rca_text"] = rca_text
+        ttl = await self._redis.ttl(key)
+        await self._redis.set(key, json.dumps(data), ex=max(ttl, 1))
+        logger.debug("Updated followup context for %s with new rca_text", fingerprint)
 
     async def increment_followup_turns(self, fingerprint: str) -> int:
         """
@@ -260,9 +271,8 @@ class AlertStore:
         value = await self._redis.get(key)
         if value is None:
             return 0
-        try:
-            data = json.loads(value)
-        except json.JSONDecodeError, TypeError:
+        data = _load_json_dict(value, key)
+        if data is None:
             return 0
         data["turns"] = data.get("turns", 0) + 1
         ttl = await self._redis.ttl(key)

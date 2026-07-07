@@ -9,17 +9,17 @@ import asyncio
 import enum
 import hashlib
 import logging
+from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
-
-from srebot.parser.alert_parser import Alert, AlertStatus, parse_alert_message
-from srebot.parser.filtering import get_ignore_registry
-
-logger = logging.getLogger(__name__)
 
 import srebot.config as config
 import srebot.llm.agent as llm_agent
 import srebot.state.store as state_store
+from srebot.parser.alert_parser import Alert, AlertStatus, parse_alert_message
+from srebot.parser.filtering import get_ignore_registry
+
+logger = logging.getLogger(__name__)
 
 
 class RejectionReason(enum.Enum):
@@ -28,9 +28,6 @@ class RejectionReason(enum.Enum):
     NO_CONTEXT = "no_context"  # No RCA context found — not a bot reply
     COOLDOWN = "cooldown"  # User is sending too fast
     LIMIT_REACHED = "limit_reached"  # Max turns exhausted for this incident
-
-
-from abc import ABC, abstractmethod
 
 
 class ChatAdapter(ABC):
@@ -57,9 +54,13 @@ class ChatAdapter(ABC):
 
     @abstractmethod
     async def update_with_analysis(
-        self, group_fp: str, placeholder_id: str | int | None, analysis: str, is_billing_error: bool
+        self,
+        group_fp: str,
+        placeholder_id: str | int | None,
+        analysis: str,
+        is_billing_error: bool,
     ) -> str | int | None:
-        """Called to update the UI with the final analysis result. Returns the ID of the message displaying the analysis."""
+        """Update the UI with the final analysis and return the displayed message ID."""
         pass
 
     @abstractmethod
@@ -193,7 +194,8 @@ async def execute_alert_group_workflow(
             await store.mark_firing(group_fp, str(final_msg_id))
         elif current_status == "resolved":
             logger.info(
-                "Alert %s was resolved during analysis. Not marking as firing or saving followup context.",
+                "Alert %s was resolved during analysis. "
+                "Not marking as firing or saving followup context.",
                 group_fp,
             )
             await store.mark_resolved(group_fp)
@@ -297,9 +299,10 @@ async def handle_followup_question(
         allowed_servers: MCP server names allowed for this cluster (passed to agent).
 
     Returns:
-        Tuple of (answer, new_incident_id, fingerprint_used, rejection_reason). If rejection_reason is not None,
-        answer is an empty string and the caller should surface a platform-specific
-        user-facing message based on the rejection reason.
+        Tuple of (answer, new_incident_id, fingerprint_used, rejection_reason).
+        If rejection_reason is not None, answer is an empty string and the caller
+        should surface a platform-specific user-facing message based on the
+        rejection reason.
     """
 
     store = await state_store.get_store()
@@ -324,7 +327,6 @@ async def handle_followup_question(
                 ctx = await store.get_followup_context(fp)
                 if not ctx:
                     fp = "general_query"
-
 
     if fp and fp != "general_query":
         # Check turns and context expiration for actual alert groups
