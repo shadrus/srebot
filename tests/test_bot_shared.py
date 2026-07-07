@@ -161,10 +161,16 @@ class TestProcessAlertText:
 
     async def test_extra_args_forwarded_to_handler(self):
         handler = AsyncMock()
-        await process_alert_text(FIRING_TEXT, handler, "chan-123", "client-obj")
+        mock_store = AsyncMock()
+        mock_store.is_muted.return_value = False
+
+        with patch("srebot.state.store.get_store", return_value=mock_store):
+            await process_alert_text(FIRING_TEXT, handler, "chan-123", "client-obj")
+
         _fp, _alerts, chan, client = handler.call_args[0]
         assert chan == "chan-123"
         assert client == "client-obj"
+        mock_store.is_muted.assert_called_once_with("slack:chan-123", "CPUHigh")
 
     async def test_two_groups_calls_handler_twice(self):
         handler = AsyncMock()

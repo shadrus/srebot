@@ -198,6 +198,93 @@ class TestSlackHandlers:
         text = client.chat_update.call_args[1]["text"]
         assert "wait" in text or "Подождите" in text
 
+    async def test_slack_message_handler_empty_mention_deletes_indicator(
+        self, mock_store, mock_settings
+    ):
+        app = MagicMock()
+        slack_register_handlers(app, mock_settings)
+        client = AsyncMock()
+        client.auth_test = AsyncMock(return_value={"user_id": "U_BOT", "user": "srebot"})
+        client.users_info = AsyncMock(return_value={"user": {"profile": {"display_name": "Yury"}}})
+        client.chat_postMessage = AsyncMock(return_value={"ts": "1111"})
+        client.chat_delete = AsyncMock()
+
+        event = {"channel": "C_SLACK", "ts": "12345.6789", "user": "U_USER"}
+        message = {"text": "<@U_BOT>", "user": "U_USER"}
+
+        with (
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.config.get_settings", return_value=mock_settings),
+            patch("srebot.bot.shared.handle_followup_question", AsyncMock()) as mock_fq,
+            patch("srebot.bot.slack.handlers.process_alert_text", AsyncMock()) as mock_proc,
+        ):
+            message_decorator = app.message()
+            handler_func = message_decorator.call_args[0][0]
+            await handler_func(event, message, client)
+
+        mock_fq.assert_not_called()
+        client.chat_delete.assert_called_once_with(channel="C_SLACK", ts="1111")
+        mock_proc.assert_not_called()
+
+    async def test_slack_message_handler_no_context_does_not_parse_as_alert(
+        self, mock_store, mock_settings
+    ):
+        app = MagicMock()
+        slack_register_handlers(app, mock_settings)
+        client = AsyncMock()
+        client.auth_test = AsyncMock(return_value={"user_id": "U_BOT", "user": "srebot"})
+        client.users_info = AsyncMock(return_value={"user": {"profile": {"display_name": "Yury"}}})
+        client.chat_postMessage = AsyncMock(return_value={"ts": "1111"})
+        client.chat_delete = AsyncMock()
+
+        event = {"channel": "C_SLACK", "ts": "12345.6789", "thread_ts": "2222", "user": "U_USER"}
+        message = {"text": "<@U_BOT> what is this?", "user": "U_USER"}
+
+        with (
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.config.get_settings", return_value=mock_settings),
+            patch(
+                "srebot.bot.shared.handle_followup_question",
+                AsyncMock(return_value=("", None, None, RejectionReason.NO_CONTEXT)),
+            ) as mock_fq,
+            patch("srebot.bot.slack.handlers.process_alert_text", AsyncMock()) as mock_proc,
+        ):
+            message_decorator = app.message()
+            handler_func = message_decorator.call_args[0][0]
+            await handler_func(event, message, client)
+
+        mock_fq.assert_called_once()
+        client.chat_delete.assert_called_once_with(channel="C_SLACK", ts="1111")
+        mock_proc.assert_not_called()
+
+    async def test_slack_bot_message_skips_chat_logic_but_reaches_alert_parser(
+        self, mock_store, mock_settings
+    ):
+        app = MagicMock()
+        slack_register_handlers(app, mock_settings)
+        client = AsyncMock()
+        client.auth_test = AsyncMock(return_value={"user_id": "U_BOT", "user": "srebot"})
+
+        event = {"channel": "C_SLACK", "ts": "12345.6789", "user": "U_BOT"}
+        message = {"text": "<@U_BOT> status", "user": "U_BOT", "bot_id": "B_BOT"}
+
+        with (
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.config.get_settings", return_value=mock_settings),
+            patch("srebot.bot.commands.handle_command", AsyncMock()) as mock_hc,
+            patch("srebot.bot.shared.handle_followup_question", AsyncMock()) as mock_fq,
+            patch("srebot.bot.slack.handlers.process_alert_text", AsyncMock()) as mock_proc,
+        ):
+            message_decorator = app.message()
+            handler_func = message_decorator.call_args[0][0]
+            await handler_func(event, message, client)
+
+        mock_hc.assert_not_called()
+        mock_fq.assert_not_called()
+        mock_proc.assert_called_once_with(
+            "<@U_BOT> status", slack_handle_alert_group, "C_SLACK", client
+        )
+
     async def test_slack_message_handler_command_srebot(self, mock_store, mock_settings):
         app = MagicMock()
         slack_register_handlers(app, mock_settings)
@@ -341,6 +428,110 @@ class TestDiscordHandlers:
         mock_store.register_bot_message.assert_called_once_with(
             "8888", "general_query", incident_id="incident-888"
         )
+
+    async def test_discord_on_message_empty_mention_deletes_indicator(
+        self, mock_store, mock_settings
+    ):
+        bot = MagicMock()
+        bot.user.id = 123456
+        bot.user.name = "srebot"
+        discord_register_handlers(bot, mock_settings)
+        on_message_func = bot.event.call_args_list[0][0][0]
+
+        message = AsyncMock()
+        message.author = MagicMock()
+        message.author.id = 777
+        message.author.display_name = "Yury"
+        message.author.name = "yury_user"
+        message.channel.id = 9999
+        message.content = "<@123456>"
+        message.mentions = [bot.user]
+        message.reference = None
+
+        indicator = AsyncMock()
+        indicator.delete = AsyncMock()
+        message.reply = AsyncMock(return_value=indicator)
+
+        with (
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.config.get_settings", return_value=mock_settings),
+            patch("srebot.bot.shared.handle_followup_question", AsyncMock()) as mock_fq,
+            patch("srebot.bot.discord.handlers.process_alert_text", AsyncMock()) as mock_proc,
+        ):
+            await on_message_func(message)
+
+        mock_fq.assert_not_called()
+        indicator.delete.assert_called_once()
+        mock_proc.assert_not_called()
+
+    async def test_discord_on_message_no_context_does_not_parse_as_alert(
+        self, mock_store, mock_settings
+    ):
+        bot = MagicMock()
+        bot.user.id = 123456
+        bot.user.name = "srebot"
+        discord_register_handlers(bot, mock_settings)
+        on_message_func = bot.event.call_args_list[0][0][0]
+
+        message = AsyncMock()
+        message.author = MagicMock()
+        message.author.id = 777
+        message.author.display_name = "Yury"
+        message.author.name = "yury_user"
+        message.channel.id = 9999
+        message.content = "what is this?"
+        message.mentions = []
+        message.reference.message_id = 5555
+
+        indicator = AsyncMock()
+        indicator.delete = AsyncMock()
+        message.reply = AsyncMock(return_value=indicator)
+
+        with (
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.config.get_settings", return_value=mock_settings),
+            patch(
+                "srebot.bot.shared.handle_followup_question",
+                AsyncMock(return_value=("", None, None, RejectionReason.NO_CONTEXT)),
+            ) as mock_fq,
+            patch("srebot.bot.discord.handlers.process_alert_text", AsyncMock()) as mock_proc,
+        ):
+            await on_message_func(message)
+
+        mock_fq.assert_called_once()
+        indicator.delete.assert_called_once()
+        mock_proc.assert_not_called()
+
+    async def test_discord_bot_message_skips_chat_logic_but_reaches_alert_parser(
+        self, mock_store, mock_settings
+    ):
+        bot = MagicMock()
+        bot.user.id = 123456
+        bot.user.name = "srebot"
+        discord_register_handlers(bot, mock_settings)
+        on_message_func = bot.event.call_args_list[0][0][0]
+
+        message = AsyncMock()
+        message.author = MagicMock()
+        message.author.bot = True
+        message.author.id = 777
+        message.channel.id = 9999
+        message.content = "srebot status"
+        message.mentions = [bot.user]
+        message.reference = None
+
+        with (
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.config.get_settings", return_value=mock_settings),
+            patch("srebot.bot.commands.handle_command", AsyncMock()) as mock_hc,
+            patch("srebot.bot.shared.handle_followup_question", AsyncMock()) as mock_fq,
+            patch("srebot.bot.discord.handlers.process_alert_text", AsyncMock()) as mock_proc,
+        ):
+            await on_message_func(message)
+
+        mock_hc.assert_not_called()
+        mock_fq.assert_not_called()
+        mock_proc.assert_called_once_with("srebot status", discord_handle_alert_group, message)
 
     async def test_discord_on_message_command_srebot(self, mock_store, mock_settings):
         bot = MagicMock()

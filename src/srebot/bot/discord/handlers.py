@@ -21,6 +21,12 @@ MESSAGES = {
         "analyzing_followup": "*🔍 Анализирую...*",
         "cooldown": "*⏳ Подождите немного перед следующим вопросом.*",
         "limit_reached": "*🔒 Лимит уточняющих вопросов по этому инциденту исчерпан ({current}/{max}).*",  # noqa: E501
+        "resolved_alert": ("✅ **Решено:** `{alertname}`\n**Кластер:** {cluster} | **Job:** {job}"),
+        "new_alert": (
+            "🚨 **Новый алерт:** `{alertname}`\n"
+            "**Кластер:** {cluster} | **Job:** {job}\n\n"
+            "*💬 Ответьте на это сообщение, чтобы запустить AI-анализ.*"
+        ),
     },
     "English": {
         "analyzing_alerts": "🔍 *Analyzing {count} alert(s)…*",
@@ -28,6 +34,14 @@ MESSAGES = {
         "analyzing_followup": "*🔍 Analyzing...*",
         "cooldown": "*⏳ Please wait a bit before the next question.*",
         "limit_reached": "*🔒 Limit of follow-up questions for this incident reached ({current}/{max}).*",  # noqa: E501
+        "resolved_alert": (
+            "✅ **Resolved:** `{alertname}`\n**Cluster:** {cluster} | **Job:** {job}"
+        ),
+        "new_alert": (
+            "🚨 **New Alert:** `{alertname}`\n"
+            "**Cluster:** {cluster} | **Job:** {job}\n\n"
+            "*💬 Reply to this message to run AI analysis.*"
+        ),
     },
 }
 
@@ -48,10 +62,10 @@ class DiscordChatAdapter(ChatAdapter):
     async def send_resolved(
         self, label: str, primary: Alert, current_status: str, reply_to_id: str | None
     ) -> None:
-        text = (
-            f"✅ **Resolved:** `{primary.alertname}`\n"
-            f"**Cluster:** {primary.cluster} | "
-            f"**Job:** {primary.labels.get('job', '—')}"
+        text = get_msg("resolved_alert").format(
+            alertname=primary.alertname,
+            cluster=primary.cluster,
+            job=primary.labels.get("job", "—"),
         )
         if self.dry_run:
             logger.info("[DRY-RUN] Would send Discord message:\n%s", text)
@@ -64,11 +78,10 @@ class DiscordChatAdapter(ChatAdapter):
     async def send_short_notification(
         self, group_fp: str, label: str, primary: Alert
     ) -> str | int | None:
-        msg_text = (
-            f"🚨 **New Alert:** `{primary.alertname}`\n"
-            f"**Cluster:** {primary.cluster} | "
-            f"**Job:** {primary.labels.get('job', '—')}\n\n"
-            f"*💬 Reply to this message to run AI analysis.*"
+        msg_text = get_msg("new_alert").format(
+            alertname=primary.alertname,
+            cluster=primary.cluster,
+            job=primary.labels.get("job", "—"),
         )
         if self.dry_run:
             logger.info("[DRY-RUN] Short notification: %s", msg_text)
@@ -203,16 +216,18 @@ def register_handlers(bot: commands.Bot, settings: Settings) -> None:
         is_mention = bot.user in message.mentions or (
             bot.user.name.lower() in message.content.lower()
         )
+        is_bot_authored = getattr(message.author, "bot", False) is True
         cleaned_text = clean_mentions(message.content, bot.user.id, bot.user.name)
 
         # Check for commands using raw content first (to support e.g. /mute@srebot)
         from srebot.bot.commands import extract_chat_id, handle_command, is_command_message
 
         command_text = None
-        if is_command_message(message.content):
-            command_text = message.content
-        elif is_command_message(cleaned_text):
-            command_text = cleaned_text
+        if not is_bot_authored:
+            if is_command_message(message.content):
+                command_text = message.content
+            elif is_command_message(cleaned_text):
+                command_text = cleaned_text
 
         if command_text:
             chat_id = extract_chat_id(message)
@@ -240,7 +255,7 @@ def register_handlers(bot: commands.Bot, settings: Settings) -> None:
         logger.debug("Received message %d from channel_id=%d", message.id, message.channel.id)
 
         # --- Follow-up detection: replies or direct mentions ---
-        if is_reply or is_mention:
+        if not is_bot_authored and (is_reply or is_mention):
             from srebot.bot.shared import RejectionReason, handle_followup_question
 
             reply_to_id = str(message.reference.message_id) if is_reply else None
@@ -254,6 +269,14 @@ def register_handlers(bot: commands.Bot, settings: Settings) -> None:
                     indicator = await message.reply(get_msg("analyzing_followup"))
                 except Exception as exc:
                     logger.warning("Could not send Discord follow-up typing indicator: %s", exc)
+
+            if not cleaned_text:
+                if indicator and not settings.dry_run:
+                    try:
+                        await indicator.delete()
+                    except Exception as exc:
+                        logger.warning("Could not delete Discord follow-up indicator: %s", exc)
+                return
 
             answer, new_incident_id, fp_used, rejection = await handle_followup_question(
                 reply_to_id=reply_to_id,
@@ -309,12 +332,13 @@ def register_handlers(bot: commands.Bot, settings: Settings) -> None:
                     )
                 return
             else:
-                # RejectionReason.NO_CONTEXT: delete indicator and fall through to alert parsing
+                # RejectionReason.NO_CONTEXT: match Telegram by silently ignoring.
                 if indicator and not settings.dry_run:
                     try:
                         await indicator.delete()
                     except Exception as exc:
                         logger.warning("Could not delete Discord follow-up indicator: %s", exc)
+                return
 
         # Fall through to normal alert parsing
         await process_alert_text(message.content, _handle_alert_group, message)
