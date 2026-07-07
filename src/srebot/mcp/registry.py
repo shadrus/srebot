@@ -30,6 +30,10 @@ _WRITE_TOOL_PATTERNS = (
     "clone",
 )
 
+_MAX_TOOL_RESULT_CHARS = 8000
+_MAX_JSON_LIST_ITEMS = 50
+_MAX_JSON_STRING_CHARS = 1000
+
 
 def _unpack_exceptions(exc: BaseException) -> list[BaseException]:
     """Recursively unwrap ExceptionGroup / TaskGroup to get leaf causes."""
@@ -246,11 +250,19 @@ async def call_tool(name: str, arguments: str | dict) -> str:
     return json.dumps({"error": f"Unknown tool: {name!r}"})
 
 
-def _process_tool_result(text: str, max_chars: int = 8000) -> str:
+def _process_tool_result(text: str, max_chars: int = _MAX_TOOL_RESULT_CHARS) -> str:
     """
     Process raw tool output to save LLM context:
     1. Deduplicate identical items in JSON lists (common for logs).
-    2. Truncate long strings with a summary.
+    2. Compact oversized JSON lists/strings into a generic bot envelope.
+    3. Truncate raw text as a fallback for non-JSON output.
+
+    Args:
+        text: Raw tool output.
+        max_chars: Maximum serialized result length before compaction.
+
+    Returns:
+        JSON or text result safe to pass back to the LLM.
     """
     if not text:
         return text
@@ -270,7 +282,108 @@ def _process_tool_result(text: str, max_chars: int = 8000) -> str:
     if len(final_text) <= max_chars:
         return final_text
 
-    return f"{final_text[:max_chars]}...\n\n[TRUNCATED: output too long ({len(final_text)} chars)]"
+    compacted_data, metadata = _compact_json_result(processed_data)
+    compacted_text = json.dumps(compacted_data, indent=2, ensure_ascii=False)
+
+    if len(compacted_text) <= max_chars:
+        return compacted_text
+
+    preview_chars = max(max_chars - 1000, 0)
+    fallback = {
+        "_bot_compacted": True,
+        "summary": {
+            **metadata,
+            "reason": "Compacted JSON output still exceeded max_chars.",
+            "max_chars": max_chars,
+            "serialized_chars": len(compacted_text),
+        },
+        "preview": compacted_text[:preview_chars],
+        "hints": [
+            "The MCP result was too large after generic compaction.",
+            (
+                "Use narrower tool arguments, filters, time ranges, "
+                "or limits if the tool supports them."
+            ),
+        ],
+    }
+    fallback_text = json.dumps(fallback, indent=2, ensure_ascii=False)
+    while len(fallback_text) > max_chars and preview_chars > 0:
+        overflow = len(fallback_text) - max_chars
+        preview_chars = max(preview_chars - overflow - 100, 0)
+        fallback["preview"] = compacted_text[:preview_chars]
+        fallback_text = json.dumps(fallback, indent=2, ensure_ascii=False)
+
+    return fallback_text
+
+
+def _compact_json_result(data: Any) -> tuple[Any, dict[str, Any]]:
+    """
+    Compact arbitrary JSON from third-party MCP tools without tool-specific knowledge.
+
+    Args:
+        data: Parsed JSON-compatible data.
+
+    Returns:
+        Tuple of compacted data and metadata describing what was changed.
+    """
+    stats = {
+        "large_lists_compacted": 0,
+        "strings_truncated": 0,
+        "items_omitted": 0,
+    }
+    compacted = _compact_json_value(data, path="$", stats=stats)
+    metadata = {
+        "large_lists_compacted": stats["large_lists_compacted"],
+        "strings_truncated": stats["strings_truncated"],
+        "items_omitted": stats["items_omitted"],
+    }
+    return compacted, metadata
+
+
+def _compact_json_value(data: Any, *, path: str, stats: dict[str, int]) -> Any:
+    """Recursively compact JSON lists and long strings."""
+    if isinstance(data, list):
+        total = len(data)
+        page = data[:_MAX_JSON_LIST_ITEMS]
+        compacted_items = [
+            _compact_json_value(item, path=f"{path}[{idx}]", stats=stats)
+            for idx, item in enumerate(page)
+        ]
+
+        if total <= _MAX_JSON_LIST_ITEMS:
+            return compacted_items
+
+        omitted = total - len(compacted_items)
+        stats["large_lists_compacted"] += 1
+        stats["items_omitted"] += omitted
+        return {
+            "_bot_compacted": True,
+            "path": path,
+            "total_items": total,
+            "returned_items": len(compacted_items),
+            "omitted_items": omitted,
+            "truncated": True,
+            "items": compacted_items,
+            "hints": [
+                "This list was compacted by the bot before sending it to the LLM.",
+                "Use narrower tool arguments, filters, pagination, or time ranges if available.",
+            ],
+        }
+
+    if isinstance(data, dict):
+        return {
+            key: _compact_json_value(value, path=f"{path}.{key}", stats=stats)
+            for key, value in data.items()
+        }
+
+    if isinstance(data, str) and len(data) > _MAX_JSON_STRING_CHARS:
+        stats["strings_truncated"] += 1
+        return (
+            f"{data[:_MAX_JSON_STRING_CHARS]}...\n\n"
+            f"[TRUNCATED_BY_BOT: string field too long ({len(data)} chars)]"
+        )
+
+    return data
 
 
 def _deduplicate_json(data: Any) -> Any:

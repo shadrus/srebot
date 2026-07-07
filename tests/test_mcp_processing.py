@@ -50,7 +50,68 @@ def test_process_tool_result_json_truncation():
     data = {"logs": [{"msg": f"log {i}"} for i in range(1000)]}
     input_text = json.dumps(data)
     processed = _process_tool_result(input_text, max_chars=100)
-    assert "[TRUNCATED" in processed
+    assert json.loads(processed)["_bot_compacted"] is True
+
+
+def test_process_tool_result_compacts_large_top_level_json_list():
+    data = [{"msg": f"log {i}"} for i in range(1000)]
+
+    processed = _process_tool_result(json.dumps(data))
+    result = json.loads(processed)
+
+    assert result["_bot_compacted"] is True
+    assert result["total_items"] == 1000
+    assert result["returned_items"] == 50
+    assert len(result["items"]) == 50
+
+
+def test_process_tool_result_compacts_nested_json_lists():
+    data = {
+        "status": "success",
+        "data": {
+            "activeTargets": [{"scrapeUrl": f"http://10.0.0.{i}:9100"} for i in range(300)],
+            "droppedTargets": [{"discoveredLabels": {"instance": str(i)}} for i in range(300)],
+        },
+    }
+
+    processed = _process_tool_result(json.dumps(data), max_chars=12000)
+    result = json.loads(processed)
+
+    active = result["data"]["activeTargets"]
+    dropped = result["data"]["droppedTargets"]
+    assert active["_bot_compacted"] is True
+    assert active["total_items"] == 300
+    assert len(active["items"]) == 50
+    assert dropped["_bot_compacted"] is True
+    assert dropped["omitted_items"] == 250
+
+
+def test_process_tool_result_truncates_long_json_strings():
+    data = {"message": "A" * 9000}
+
+    processed = _process_tool_result(json.dumps(data))
+    result = json.loads(processed)
+
+    assert "TRUNCATED_BY_BOT" in result["message"]
+
+
+def test_process_tool_result_fallback_fits_max_chars():
+    data = {
+        "activeTargets": [
+            {"instance": f"10.0.0.{i}:9100", "job": "node-exporter"} for i in range(1000)
+        ],
+        "droppedTargets": [
+            {"instance": f"10.1.0.{i}:9100", "reason": "dropped"} for i in range(1000)
+        ],
+        "bigLog": "A" * 20000,
+    }
+
+    processed = _process_tool_result(json.dumps(data), max_chars=8000)
+    result = json.loads(processed)
+
+    assert len(processed) <= 8000
+    assert result["_bot_compacted"] is True
+    assert result["summary"]["items_omitted"] == 1900
 
 
 def test_process_tool_result_invalid_json():

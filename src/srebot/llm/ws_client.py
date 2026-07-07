@@ -31,6 +31,58 @@ def _trim_tool_result(result: str, max_chars: int = _MAX_TOOL_RESULT_CHARS) -> s
     )
 
 
+async def _send_ws_json(websocket: Any, payload: dict[str, Any], context: str) -> None:
+    """
+    Send a JSON WebSocket text frame and log its serialized size.
+
+    Args:
+        websocket: Connected WebSocket client.
+        payload: Event payload to serialize.
+        context: Short caller context for logs.
+    """
+    event = payload.get("event", "unknown")
+    raw = json.dumps(payload)
+    logger.info(
+        "WS send (%s): event=%s chars=%d bytes=%d",
+        context,
+        event,
+        len(raw),
+        len(raw.encode()),
+    )
+    await websocket.send(raw)
+
+
+async def _recv_ws_json(websocket: Any, context: str) -> dict[str, Any]:
+    """
+    Receive a JSON WebSocket text frame and log its raw size.
+
+    Args:
+        websocket: Connected WebSocket client.
+        context: Short caller context for logs.
+
+    Returns:
+        Parsed JSON object.
+    """
+    raw = await websocket.recv()
+    if isinstance(raw, bytes):
+        raw_text = raw.decode()
+        byte_count = len(raw)
+    else:
+        raw_text = raw
+        byte_count = len(raw_text.encode())
+
+    msg = json.loads(raw_text)
+    event = msg.get("event", "unknown") if isinstance(msg, dict) else "non_object"
+    logger.info(
+        "WS receive (%s): event=%s chars=%d bytes=%d",
+        context,
+        event,
+        len(raw_text),
+        byte_count,
+    )
+    return msg
+
+
 class SaaSWSClient:
     ws_url: str
     token: str
@@ -68,8 +120,7 @@ class SaaSWSClient:
                     # 1. Wait for initial strategies (always sent by server on connect)
                     # and then send the initial alert data
                     while True:
-                        raw = await websocket.recv()
-                        msg = json.loads(raw)
+                        msg = await _recv_ws_json(websocket, "alert.init")
                         if await self._handle_server_event(msg):
                             break  # Got strategies, can proceed
                         else:
@@ -86,13 +137,12 @@ class SaaSWSClient:
                         "tools": tools_schema,
                         "response_language": response_language,
                     }
-                    await websocket.send(json.dumps(payload))
+                    await _send_ws_json(websocket, payload, "alert.start")
 
                     # 2. Loop to handle Server Events
                     used_tools: set[str] = set()
                     while True:
-                        response_raw = await websocket.recv()
-                        response = json.loads(response_raw)
+                        response = await _recv_ws_json(websocket, "alert.loop")
                         event = response.get("event")
 
                         if event == "final_analysis":
@@ -136,7 +186,7 @@ class SaaSWSClient:
 
                             results = await asyncio.gather(*(run_tool(tc) for tc in tools))
                             result_payload = {"event": "tools_result", "results": results}
-                            await websocket.send(json.dumps(result_payload))
+                            await _send_ws_json(websocket, result_payload, "alert.tools")
 
                         elif event == "error":
                             msg = response.get("message")
@@ -197,8 +247,7 @@ class SaaSWSClient:
                 ) as websocket:
                     # Wait for initial strategies
                     while True:
-                        raw = await websocket.recv()
-                        msg = json.loads(raw)
+                        msg = await _recv_ws_json(websocket, "followup.init")
                         if await self._handle_server_event(msg):
                             break
                         else:
@@ -218,12 +267,11 @@ class SaaSWSClient:
                         "response_language": response_language,
                         "user_name": user_name,
                     }
-                    await websocket.send(json.dumps(payload))
+                    await _send_ws_json(websocket, payload, "followup.start")
 
                     used_tools: set[str] = set()
                     while True:
-                        response_raw = await websocket.recv()
-                        response = json.loads(response_raw)
+                        response = await _recv_ws_json(websocket, "followup.loop")
                         event = response.get("event")
 
                         if event == "final_analysis":
@@ -269,7 +317,7 @@ class SaaSWSClient:
 
                             results = await asyncio.gather(*(run_tool(tc) for tc in tools))
                             result_payload = {"event": "tools_result", "results": results}
-                            await websocket.send(json.dumps(result_payload))
+                            await _send_ws_json(websocket, result_payload, "followup.tools")
 
                         elif event == "error":
                             msg = response.get("message")
@@ -304,8 +352,7 @@ class SaaSWSClient:
             ) as websocket:
                 # Wait for strategies
                 while True:
-                    raw = await websocket.recv()
-                    msg = json.loads(raw)
+                    msg = await _recv_ws_json(websocket, "extract.init")
                     if await self._handle_server_event(msg):
                         break
 
@@ -313,11 +360,10 @@ class SaaSWSClient:
                     "event": "extract_alerts",
                     "text": text,
                 }
-                await websocket.send(json.dumps(payload))
+                await _send_ws_json(websocket, payload, "extract.start")
 
                 while True:
-                    response_raw = await websocket.recv()
-                    response = json.loads(response_raw)
+                    response = await _recv_ws_json(websocket, "extract.loop")
                     event = response.get("event")
 
                     if event == "extracted_alerts":
@@ -346,8 +392,7 @@ class SaaSWSClient:
                 self.ws_url, additional_headers={"Authorization": f"Bearer {self.token}"}
             ) as websocket:
                 # The server sends 'update_strategies' immediately after accept
-                raw = await websocket.recv()
-                msg = json.loads(raw)
+                msg = await _recv_ws_json(websocket, "strategies.refresh")
                 await self._handle_server_event(msg)
         except json.JSONDecodeError:
             logger.exception("Invalid JSON received while refreshing parsing strategies")
