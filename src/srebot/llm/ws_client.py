@@ -9,6 +9,27 @@ from srebot.parser.alert_parser import update_remote_strategies
 
 logger = logging.getLogger(__name__)
 
+_MAX_TOOL_RESULT_CHARS = 8000
+
+
+def _trim_tool_result(result: str, max_chars: int = _MAX_TOOL_RESULT_CHARS) -> str:
+    """
+    Limit tool output before sending it back over the SaaS WebSocket.
+
+    Args:
+        result: Serialized tool result.
+        max_chars: Maximum number of characters to keep.
+
+    Returns:
+        Original or truncated result string.
+    """
+    if len(result) <= max_chars:
+        return result
+
+    return (
+        f"{result[:max_chars]}...\n\n[TRUNCATED_BY_BOT: tool output too long ({len(result)} chars)]"
+    )
+
 
 class SaaSWSClient:
     ws_url: str
@@ -103,7 +124,7 @@ class SaaSWSClient:
                                     result = await asyncio.wait_for(
                                         tool_executor(t_name, args_str), timeout=60
                                     )
-                                    result_str = str(result)
+                                    result_str = _trim_tool_result(str(result))
                                 except TimeoutError:
                                     logger.error("Tool %s timed out after 60s", t_name)
                                     result_str = "Error: Tool execution timed out after 60s"
@@ -236,7 +257,7 @@ class SaaSWSClient:
                                     result = await asyncio.wait_for(
                                         call_tool(t_name, args_str), timeout=60
                                     )
-                                    result_str = str(result)
+                                    result_str = _trim_tool_result(str(result))
                                 except TimeoutError:
                                     logger.error("Tool %s timed out after 60s", t_name)
                                     result_str = "Error: Tool execution timed out after 60s"

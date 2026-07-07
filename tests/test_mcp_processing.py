@@ -1,5 +1,6 @@
 import json
 
+from srebot.llm.ws_client import _trim_tool_result
 from srebot.mcp.registry import _process_tool_result
 
 
@@ -58,3 +59,10 @@ def test_process_tool_result_invalid_json():
     processed = _process_tool_result(invalid_json, max_chars=50)
     assert processed.startswith("{ 'bad'")
     assert "[TRUNCATED" in processed
+
+
+def test_trim_tool_result_limits_websocket_payload():
+    result = _trim_tool_result("A" * 1000, max_chars=100)
+
+    assert result.startswith("A" * 100)
+    assert "[TRUNCATED_BY_BOT" in result
