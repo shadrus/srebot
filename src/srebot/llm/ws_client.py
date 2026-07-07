@@ -5,6 +5,7 @@ from typing import Any
 
 from websockets.asyncio.client import connect
 
+from srebot.config import get_settings
 from srebot.parser.alert_parser import update_remote_strategies
 
 logger = logging.getLogger(__name__)
@@ -107,9 +108,11 @@ class SaaSWSClient:
         tool_executor: Any,
         response_language: str = "English",
     ) -> tuple[str, str | None]:
+        settings = get_settings()
+        timeout = settings.alert_analysis_timeout
         try:
             logger.info("Connecting to SaaS Control Plane at %s...", self.ws_url)
-            async with asyncio.timeout(600):  # 10m total analysis limit
+            async with asyncio.timeout(timeout):
                 async with connect(
                     self.ws_url,
                     additional_headers={"Authorization": f"Bearer {self.token}"},
@@ -199,7 +202,7 @@ class SaaSWSClient:
                         else:
                             logger.warning("Unknown event from SaaS: %s", event)
         except TimeoutError:
-            logger.error("Analysis timed out after 10 minutes")
+            logger.error("Analysis timed out after %d seconds", timeout)
             return (
                 "⚠️ <b>Analysis timed out:</b> The AI took too long to respond. "
                 "Please investigate manually."
@@ -235,9 +238,11 @@ class SaaSWSClient:
         Returns:
             The bot's follow-up answer as a string.
         """
+        settings = get_settings()
+        timeout = settings.followup_analysis_timeout
         try:
             logger.info("Connecting to SaaS Control Plane for follow-up analysis...")
-            async with asyncio.timeout(300):  # 5m — simpler than full RCA
+            async with asyncio.timeout(timeout):
                 async with connect(
                     self.ws_url,
                     additional_headers={"Authorization": f"Bearer {self.token}"},
@@ -331,7 +336,7 @@ class SaaSWSClient:
                             logger.warning("Unknown event from SaaS (follow-up): %s", event)
 
         except TimeoutError:
-            logger.error("Follow-up analysis timed out after 5 minutes")
+            logger.error("Follow-up analysis timed out after %d seconds", timeout)
             return (
                 "⚠️ <b>Analysis timed out:</b> The AI took too long to respond. Please try again.",
                 None,

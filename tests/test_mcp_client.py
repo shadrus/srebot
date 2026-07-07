@@ -43,3 +43,42 @@ async def test_call_tool_handles_is_error_flag_in_result():
 
     # It now returns a JSON error even if content is just text
     assert json.loads(result) == {"error": "Internal Server Error"}
+
+
+@pytest.mark.asyncio
+async def test_call_tool_rewrites_calendar_interval_for_elasticsearch_search():
+    client = ExternalMCPClient("dummy_cmd")
+    client._session = AsyncMock()
+
+    arguments = {
+        "index": "filebeat-*",
+        "query_body": {
+            "aggs": {
+                "by_time": {"date_histogram": {"field": "@timestamp", "calendar_interval": "15m"}},
+                "by_day": {"date_histogram": {"field": "@timestamp", "calendar_interval": "1d"}},
+            }
+        },
+    }
+
+    # Simulate a successful tool response
+    mock_content = MagicMock()
+    mock_content.text = "success"
+    mock_result = MagicMock()
+    mock_result.content = [mock_content]
+    mock_result.isError = False
+    client._session.call_tool.return_value = mock_result
+
+    await client.call_tool("search", arguments)
+
+    # Verify that client._session.call_tool was called with rewritten arguments
+    called_args = client._session.call_tool.call_args[0]
+    passed_name = called_args[0]
+    passed_arguments = called_args[1]
+
+    by_time_hist = passed_arguments["query_body"]["aggs"]["by_time"]["date_histogram"]
+    by_day_hist = passed_arguments["query_body"]["aggs"]["by_day"]["date_histogram"]
+
+    assert passed_name == "search"
+    assert by_time_hist["fixed_interval"] == "15m"
+    assert "calendar_interval" not in by_time_hist
+    assert by_day_hist["calendar_interval"] == "1d"

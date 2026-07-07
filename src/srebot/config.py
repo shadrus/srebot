@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     followup_max_turns: int = 5  # Max follow-up exchanges per alert group
     followup_ttl: int = 43200  # Seconds follow-up context window stays open (12 h)
     followup_user_cooldown_sec: int = 10  # Min seconds between follow-ups per user
+    alert_analysis_timeout: int = 600  # seconds
+    followup_analysis_timeout: int = 300  # seconds
 
     # MCP connection retry settings (for sidecar startup races)
     mcp_connect_retries: int = 5  # Max connection attempts per MCP server

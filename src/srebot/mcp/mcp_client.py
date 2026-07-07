@@ -2,13 +2,48 @@
 
 import json
 import logging
+import re
 from contextlib import AsyncExitStack
+from typing import Any
 
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamablehttp_client
 
 logger = logging.getLogger(__name__)
+
+
+def _fix_date_histogram_intervals(data: Any) -> Any:
+    if isinstance(data, dict):
+        new_dict = {}
+        for k, v in data.items():
+            if k == "date_histogram" and isinstance(v, dict):
+                new_v = dict(v)
+                if "calendar_interval" in new_v:
+                    val = new_v["calendar_interval"]
+                    if isinstance(val, str):
+                        val_strip = val.strip().lower()
+                        valid_words = {"minute", "hour", "day", "week", "month", "quarter", "year"}
+                        is_valid = False
+                        if val_strip in valid_words:
+                            is_valid = True
+                        else:
+                            m = re.match(r"^(\d+)([a-zA-Z]+)$", val_strip)
+                            if m:
+                                num = int(m.group(1))
+                                unit = m.group(2)
+                                if num == 1 and unit in {"m", "h", "d", "w", "q", "y"}:
+                                    is_valid = True
+                        if not is_valid:
+                            new_v["fixed_interval"] = new_v.pop("calendar_interval")
+                new_dict[k] = _fix_date_histogram_intervals(new_v)
+            else:
+                new_dict[k] = _fix_date_histogram_intervals(v)
+        return new_dict
+    elif isinstance(data, list):
+        return [_fix_date_histogram_intervals(item) for item in data]
+    else:
+        return data
 
 
 class ExternalMCPClient:
@@ -64,6 +99,10 @@ class ExternalMCPClient:
 
     async def call_tool(self, name: str, arguments: dict) -> str:
         """Call a tool on the external MCP server."""
+        if name == "search" and isinstance(arguments, dict) and "query_body" in arguments:
+            arguments = dict(arguments)
+            arguments["query_body"] = _fix_date_histogram_intervals(arguments["query_body"])
+
         if not self._session:
             await self.connect()
 
