@@ -1,16 +1,20 @@
 """MCP client for connecting to external MCP servers."""
 
+import asyncio
 import json
 import logging
 import re
 from contextlib import AsyncExitStack
 from typing import Any
 
+from anyio import BrokenResourceError, ClosedResourceError, EndOfStream
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamablehttp_client
 
 logger = logging.getLogger(__name__)
+
+_RECOVERABLE_TRANSPORT_ERRORS = (ClosedResourceError, BrokenResourceError, EndOfStream)
 
 
 def _fix_date_histogram_intervals(data: Any) -> Any:
@@ -58,6 +62,7 @@ class ExternalMCPClient:
         self.transport = transport
         self._session: ClientSession | None = None
         self._exit_stack = AsyncExitStack()
+        self._call_lock = asyncio.Lock()
 
     async def connect(self):
         """Establish connection to the MCP server via SSE or Streamable HTTP."""
@@ -103,27 +108,80 @@ class ExternalMCPClient:
             arguments = dict(arguments)
             arguments["query_body"] = _fix_date_histogram_intervals(arguments["query_body"])
 
+        async with self._call_lock:
+            if not self._session:
+                await self.connect()
+
+            try:
+                return await self._call_tool_once(name, arguments)
+            except _RECOVERABLE_TRANSPORT_ERRORS:
+                logger.warning(
+                    "External MCP transport closed while calling tool %s; reconnecting once",
+                    name,
+                    exc_info=True,
+                )
+                await self._reset_session()
+                await self.connect()
+
+                try:
+                    return await self._call_tool_once(name, arguments)
+                except Exception as exc:
+                    return self._tool_error_response(name, exc)
+            except Exception as exc:
+                return self._tool_error_response(name, exc)
+
+    async def _call_tool_once(self, name: str, arguments: dict) -> str:
+        """
+        Call a tool once on the current session.
+
+        Args:
+            name: External MCP tool name.
+            arguments: Tool arguments.
+
+        Returns:
+            Tool text content, or a serialized JSON error for MCP-level tool failures.
+        """
         if not self._session:
-            await self.connect()
+            raise RuntimeError("MCP session is not connected")
 
+        result = await self._session.call_tool(name, arguments)
+        # MCP results can have multiple components (text, image, resource)
+        texts = [c.text for c in result.content if hasattr(c, "text")]
+        content = "\n".join(texts)
+
+        if getattr(result, "isError", False):
+            return json.dumps({"error": content or "Unknown tool error"})
+
+        return content
+
+    def _tool_error_response(self, name: str, exc: Exception) -> str:
+        """
+        Convert a tool-call exception into the JSON error envelope expected by callers.
+
+        Args:
+            name: External MCP tool name.
+            exc: Exception raised by the client or transport.
+
+        Returns:
+            Serialized JSON error object.
+        """
+        error_msg = str(exc)
+        if not error_msg:
+            error_msg = type(exc).__name__
+        logger.exception("Error calling external MCP tool %s", name)
+        return json.dumps({"error": error_msg})
+
+    async def _reset_session(self) -> None:
+        """Drop the current MCP session and prepare a fresh exit stack for reconnect."""
         try:
-            result = await self._session.call_tool(name, arguments)
-            # MCP results can have multiple components (text, image, resource)
-            texts = [c.text for c in result.content if hasattr(c, "text")]
-            content = "\n".join(texts)
-
-            if getattr(result, "isError", False):
-                return json.dumps({"error": content or "Unknown tool error"})
-
-            return content
-        except Exception as exc:
-            error_msg = str(exc)
-            if not error_msg:
-                error_msg = type(exc).__name__
-            logger.exception("Error calling external MCP tool %s", name)
-            return json.dumps({"error": error_msg})
+            await self._exit_stack.aclose()
+        except BaseException:
+            logger.debug("Ignoring MCP session close failure before reconnect", exc_info=True)
+        self._session = None
+        self._exit_stack = AsyncExitStack()
 
     async def close(self):
         """Close the connection and session."""
         await self._exit_stack.aclose()
         self._session = None
+        self._exit_stack = AsyncExitStack()
