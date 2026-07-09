@@ -65,3 +65,4 @@ logs/
 # Secrets / config with real values
 config.yml
 ignore_rules.yml
+.zed/settings.json
