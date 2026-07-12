@@ -13,10 +13,12 @@ from srebot.bot.discord.handlers import (
 from srebot.bot.discord.handlers import (
     register_handlers as discord_register_handlers,
 )
+from srebot.bot.discord.handlers import split_discord_message
 from srebot.bot.shared import RejectionReason
 from srebot.bot.slack.handlers import (
     _handle_alert_group as slack_handle_alert_group,
 )
+from srebot.bot.slack.handlers import _markdown_to_slack
 from srebot.bot.slack.handlers import (
     clean_mentions as slack_clean_mentions,
 )
@@ -66,6 +68,9 @@ def mock_store():
     store.save_followup_context = AsyncMock()
     store.register_bot_message = AsyncMock()
     store.get_fp_by_message_id = AsyncMock(return_value=None)
+    store.get_bot_message_context = AsyncMock(
+        return_value={"fingerprint": "fp123", "incident_id": "incident123"}
+    )
     store.get_last_active_incident = AsyncMock(return_value=None)
     store.set_last_active_incident = AsyncMock()
     return store
@@ -97,6 +102,9 @@ def mock_settings():
 
 
 class TestSlackHandlers:
+    def test_slack_markdown_preserves_bold_and_italic(self):
+        assert _markdown_to_slack("**bold** and *italic*") == "*bold* and _italic_"
+
     async def test_slack_handle_alert_group_firing(self, mock_store, mock_agent, mock_settings):
         alert = _firing_alert()
         client = AsyncMock()
@@ -132,7 +140,7 @@ class TestSlackHandlers:
         slack_register_handlers(app, mock_settings)
 
         client = AsyncMock()
-        client.auth_test = AsyncMock(return_value={"user_id": "U_BOT"})
+        client.auth_test = AsyncMock(return_value={"user_id": "U_BOT", "user": "srebot"})
         client.users_info = AsyncMock(return_value={"user": {"profile": {"display_name": "Yury"}}})
         client.chat_postMessage = AsyncMock(return_value={"ts": "1111"})
         client.chat_update = AsyncMock()
@@ -170,11 +178,72 @@ class TestSlackHandlers:
             "1111", "general_query", incident_id="incident-999"
         )
 
+    async def test_slack_app_mention_reaches_followup_handler(self, mock_store, mock_settings):
+        app = MagicMock()
+        client = AsyncMock()
+        client.auth_test.return_value = {"user_id": "U_BOT", "user": "srebot"}
+        client.users_info.return_value = {"user": {"profile": {"display_name": "Yury"}}}
+        client.chat_postMessage.return_value = {"ts": "1111"}
+
+        with (
+            patch("srebot.bot.slack.handlers.bot_user_id", None),
+            patch("srebot.bot.slack.handlers.bot_username", None),
+        ):
+            slack_register_handlers(app, mock_settings)
+            mention_handler = app.event.return_value.call_args[0][0]
+
+            with (
+                patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+                patch(
+                    "srebot.bot.shared.handle_followup_question",
+                    AsyncMock(return_value=("answer", "incident-2", "general_query", None)),
+                ) as mock_fq,
+            ):
+                await mention_handler(
+                    {
+                        "channel": "C_SLACK",
+                        "ts": "12345.6789",
+                        "user": "U_USER",
+                        "text": "<@U_BOT> inspect latency",
+                    },
+                    client,
+                )
+
+        mock_fq.assert_called_once_with(
+            reply_to_id=None,
+            question="inspect latency",
+            user_id="U_USER",
+            chat_id="slack:C_SLACK",
+            user_display_name="Yury",
+        )
+
+    async def test_slack_unrelated_thread_is_ignored(self, mock_store, mock_settings):
+        app = MagicMock()
+        slack_register_handlers(app, mock_settings)
+        handler = app.message.return_value.call_args[0][0]
+        client = AsyncMock()
+        client.auth_test.return_value = {"user_id": "U_BOT", "user": "srebot"}
+        mock_store.get_bot_message_context.return_value = None
+
+        with (
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.bot.shared.handle_followup_question", AsyncMock()) as mock_fq,
+            patch("srebot.bot.slack.handlers.process_alert_text", AsyncMock()) as mock_process,
+        ):
+            await handler(
+                {"channel": "C_SLACK", "thread_ts": "other-root", "user": "U_USER"},
+                {"text": "ordinary thread reply", "user": "U_USER"},
+                client,
+            )
+
+        mock_fq.assert_not_called()
+        mock_process.assert_not_called()
+
     async def test_slack_message_handler_followup_cooldown(self, mock_store, mock_settings):
         app = MagicMock()
         slack_register_handlers(app, mock_settings)
         client = AsyncMock()
-        client.auth_test = AsyncMock(return_value={"user_id": "U_BOT"})
+        client.auth_test = AsyncMock(return_value={"user_id": "U_BOT", "user": "srebot"})
         client.users_info = AsyncMock(return_value={"user": {"profile": {"display_name": "Yury"}}})
         client.chat_postMessage = AsyncMock(return_value={"ts": "1111"})
         client.chat_update = AsyncMock()
@@ -482,6 +551,10 @@ class TestDiscordHandlers:
         message.content = "what is this?"
         message.mentions = []
         message.reference.message_id = 5555
+        mock_store.get_bot_message_context.return_value = {
+            "fingerprint": "fp123",
+            "incident_id": "incident123",
+        }
 
         indicator = AsyncMock()
         indicator.delete = AsyncMock()
@@ -501,6 +574,78 @@ class TestDiscordHandlers:
         mock_fq.assert_called_once()
         indicator.delete.assert_called_once()
         mock_proc.assert_not_called()
+
+    async def test_discord_reply_to_non_bot_message_is_ignored(self, mock_store, mock_settings):
+        bot = MagicMock()
+        bot.user.id = 123456
+        bot.user.name = "srebot"
+        discord_register_handlers(bot, mock_settings)
+        on_message_func = bot.event.call_args_list[0][0][0]
+
+        message = AsyncMock()
+        message.id = 7777
+        message.author = MagicMock(id=777, bot=False)
+        message.channel.id = 9999
+        message.content = "ordinary reply"
+        message.mentions = []
+        message.reference.message_id = 5555
+        message.reference.resolved = None
+        referenced = MagicMock()
+        referenced.author.id = 654321
+        message.channel.fetch_message.return_value = referenced
+        mock_store.get_bot_message_context.return_value = None
+
+        with (
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.bot.shared.handle_followup_question", AsyncMock()) as mock_fq,
+            patch("srebot.bot.discord.handlers.process_alert_text", AsyncMock()) as mock_process,
+        ):
+            await on_message_func(message)
+
+        mock_fq.assert_not_called()
+        mock_process.assert_not_called()
+
+    async def test_discord_long_followup_is_split_without_truncation(
+        self, mock_store, mock_settings
+    ):
+        bot = MagicMock()
+        bot.user.id = 123456
+        bot.user.name = "srebot"
+        discord_register_handlers(bot, mock_settings)
+        on_message_func = bot.event.call_args_list[0][0][0]
+
+        message = AsyncMock()
+        message.author = MagicMock(id=777, bot=False)
+        message.author.display_name = "Yury"
+        message.channel.id = 9999
+        message.content = "<@123456> inspect everything"
+        message.mentions = [bot.user]
+        message.reference = None
+
+        indicator = AsyncMock(id=8888)
+        continuation = AsyncMock(id=9999)
+        message.reply.side_effect = [indicator, continuation]
+        answer = "x" * 2500
+
+        with (
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch(
+                "srebot.bot.shared.handle_followup_question",
+                AsyncMock(return_value=(answer, "incident-2", "general_query", None)),
+            ),
+        ):
+            await on_message_func(message)
+
+        first_chunk = indicator.edit.call_args.kwargs["content"]
+        second_chunk = message.reply.call_args_list[1].args[0]
+        assert first_chunk + second_chunk == answer
+        assert len(first_chunk) <= 1900
+        assert len(second_chunk) <= 1900
+        assert mock_store.register_bot_message.call_count == 2
+
+    def test_split_discord_message_rejects_invalid_limit(self):
+        with pytest.raises(ValueError, match="positive"):
+            split_discord_message("text", limit=0)
 
     async def test_discord_bot_message_skips_chat_logic_but_reaches_alert_parser(
         self, mock_store, mock_settings

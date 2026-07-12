@@ -54,17 +54,15 @@ def _markdown_to_slack(text: str) -> str:
     """
     Convert standard Markdown to Slack mrkdwn format.
     """
-    # 1. Bold: **text** -> *text*
+    # Convert italics before bold so the resulting Slack bold markers are not
+    # interpreted as Markdown italics by the next substitution.
+    text = re.sub(r"(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)", r"_\1_", text)
     text = re.sub(r"\*\*(.*?)\*\*", r"*\1*", text)
-    # 2. Italic: *text* -> _text_ (only if not already bold)
-    # This is tricky because of Slack's non-standard markdown.
-    # We'll do a simple swap for now.
-    text = re.sub(r"(?<!\*)\*(.*?)\*(?!\*)", r"_\1_", text)
-    # 3. Headers: # Header -> *Header*
+    # Headers: # Header -> *Header*
     text = re.sub(r"^#+\s+(.*?)$", r"*\1*", text, flags=re.MULTILINE)
-    # 4. Strikethrough: ~~text~~ -> ~text~
+    # Strikethrough: ~~text~~ -> ~text~
     text = re.sub(r"~~(.*?)~~", r"~\1~", text)
-    # 5. Links: [text](url) -> <url|text>
+    # Links: [text](url) -> <url|text>
     text = re.sub(r"\[(.*?)\]\((.*?)\)", r"<\2|\1>", text)
 
     return text
@@ -203,8 +201,12 @@ async def get_bot_info(client: AsyncWebClient) -> tuple[str, str]:
     if bot_user_id is None or bot_username is None:
         try:
             auth_response = await client.auth_test()
-            bot_user_id = auth_response["user_id"]
-            bot_username = auth_response["user"]
+            user_id = auth_response.get("user_id")
+            username = auth_response.get("user")
+            if not isinstance(user_id, str) or not isinstance(username, str):
+                raise ValueError("Slack auth_test response is missing bot user data")
+            bot_user_id = user_id
+            bot_username = username
         except Exception as exc:
             logger.warning("Could not fetch Slack bot info: %s", exc)
     return bot_user_id or "", bot_username or ""
@@ -251,16 +253,10 @@ def register_handlers(app: AsyncApp, settings: Settings) -> None:
 
         await process_alert_text(text, _handle_alert_group, channel_id, client)
 
-    @app.event("app_mention")
     async def handle_app_mention_events(event: dict, client: AsyncWebClient) -> None:
         """Handler for bot mentions (@srebot)."""
-        channel_id = event.get("channel", "")
-        if channel_id == settings.slack_channel_id:
-            # Let handle_message_events handle it to avoid duplicate processing
-            return
-        await _process_incoming_text(event.get("text", ""), channel_id, client)
+        await handle_message_events(event, event, client)
 
-    @app.message()
     async def handle_message_events(event: dict, message: dict, client: AsyncWebClient) -> None:
         """
         Handler for all channel messages.
@@ -290,6 +286,11 @@ def register_handlers(app: AsyncApp, settings: Settings) -> None:
         is_mention = bool(bot_id and f"<@{bot_id}>" in text)
         cleaned_text = clean_mentions(text, bot_id)
 
+        thread_has_context = False
+        if thread_ts:
+            store = await state_store.get_store()
+            thread_has_context = bool(await store.get_bot_message_context(thread_ts))
+
         # Check for commands using raw content first (to support e.g. /mute@srebot)
         from srebot.bot.commands import extract_chat_id, handle_command, is_command_message
 
@@ -301,6 +302,9 @@ def register_handlers(app: AsyncApp, settings: Settings) -> None:
                 command_text = cleaned_text
 
         if command_text:
+            if thread_ts and not thread_has_context:
+                logger.debug("Ignoring command in unrelated Slack thread %s", thread_ts)
+                return
             chat_id = extract_chat_id(channel_id)
             if chat_id:
                 response = await handle_command(
@@ -321,7 +325,7 @@ def register_handlers(app: AsyncApp, settings: Settings) -> None:
                     return
 
         # --- Follow-up detection: thread replies or direct mentions ---
-        if not is_bot_authored and (thread_ts or is_mention):
+        if not is_bot_authored and ((thread_ts and thread_has_context) or is_mention):
             from srebot.bot.shared import RejectionReason, handle_followup_question
 
             user_display_name = None
@@ -362,7 +366,7 @@ def register_handlers(app: AsyncApp, settings: Settings) -> None:
                 return
 
             answer, new_incident_id, fp_used, rejection = await handle_followup_question(
-                reply_to_id=thread_ts,
+                reply_to_id=thread_ts if thread_has_context else None,
                 question=cleaned_text,
                 user_id=str(user_id),
                 chat_id=chat_id,
@@ -438,5 +442,12 @@ def register_handlers(app: AsyncApp, settings: Settings) -> None:
                         logger.warning("Could not delete Slack follow-up indicator: %s", exc)
                 return
 
+        if thread_ts:
+            logger.debug("Ignoring message in unrelated Slack thread %s", thread_ts)
+            return
+
         # Fall through to normal alert parsing
         await _process_incoming_text(text, channel_id, client)
+
+    app.event("app_mention")(handle_app_mention_events)
+    app.message()(handle_message_events)

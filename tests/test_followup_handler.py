@@ -349,7 +349,7 @@ class TestFollowupReplyHandler:
         ):
             await followup_reply_handler(update, mock_context)
 
-        mock_hc.assert_called_once_with("/mute 1h", None, "-100", bot_username="mock_bot")
+        mock_hc.assert_called_once_with("/mute 1h", None, "telegram:-100", bot_username="mock_bot")
         update.message.reply_text.assert_called_once()
         args = update.message.reply_text.call_args[0][0]
         assert "Muted globally" in args

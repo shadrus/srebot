@@ -30,6 +30,7 @@ class DiscordBotIntegration(BotIntegration):
         super().__init__(settings)
         self._bot: commands.Bot | None = None
         self._stop_event = asyncio.Event()
+        self._initialized = False
 
     # ------------------------------------------------------------------
     # BotIntegration interface
@@ -70,10 +71,12 @@ class DiscordBotIntegration(BotIntegration):
         @self._bot.event
         async def on_ready() -> None:
             logger.info("Discord bot logged in as %s (ID: %d)", self._bot.user, self._bot.user.id)
-            # Fetch latest parsing strategies upon startup
-            await get_agent().refresh_strategies()
-            await self._register_mcp_servers()
-            logger.info("Discord integration fully initialized.")
+            if not self._initialized:
+                # on_ready may run again after a reconnect; shared resources are initialized once.
+                await get_agent().refresh_strategies()
+                await self._register_mcp_servers()
+                self._initialized = True
+                logger.info("Discord integration fully initialized.")
 
         # Register handlers (pass bot and settings)
         register_handlers(self._bot, self._settings)

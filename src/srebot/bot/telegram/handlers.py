@@ -79,7 +79,7 @@ class TelegramChatAdapter(ChatAdapter):
         self.dry_run = dry_run
 
     def get_chat_id(self) -> str:
-        return str(self.source_msg.chat_id)
+        return f"telegram:{self.source_msg.chat_id}"
 
     async def send_resolved(
         self, label: str, primary: Alert, current_status: str, reply_to_id: str | None
@@ -247,7 +247,7 @@ async def followup_reply_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     dry_run = config.get_settings().dry_run
     reply_to_id = str(msg.reply_to_message.message_id) if is_reply else None
-    chat_id = str(msg.chat_id)
+    chat_id = f"telegram:{msg.chat_id}"
     user_id = str(msg.from_user.id) if getattr(msg, "from_user", None) else f"channel_{msg.chat_id}"
     question = msg.text.strip()
 
