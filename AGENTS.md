@@ -112,6 +112,25 @@ src/srebot/
 3. The schema is auto-generated — no manual JSON schema needed.
 4. Add a unit or integration test.
 
+### External MCP Compatibility
+
+External MCP servers are independent open-source components that this project does not control.
+Design integrations against the standard MCP contract and the tool fields actually provided by
+the server, such as `name`, `description`, `inputSchema`, and standard annotations when present.
+
+- Never make core functionality depend on custom metadata, proprietary schema extensions,
+  upstream patches, forks, or changes to an external MCP server.
+- Never assume that an external MCP exposes a particular vendor, tool name, query language, or
+  observability capability unless it is present in the tool schema received at runtime.
+- Treat capability detection from tool names and descriptions as best-effort only. Unknown or
+  ambiguous tools must remain usable through their original schema and must not cause startup or
+  analysis failures.
+- Vendor-specific adapters or configuration mappings are allowed only as optional enhancements.
+  They must have a vendor-neutral fallback that works with an unmodified MCP server.
+- Safety requirements such as read-only access, cluster isolation, and write-tool filtering must
+  be enforced by this project and its configuration; do not rely on an external MCP being changed
+  to enforce them.
+
 ---
 
 ## Testing
