@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "srebot"
 version = "0.1.0"
-description = "Telegram bot that analyzes Prometheus alerts using LLM and MCP tools"
+description = "Multi-platform chat bot that analyzes Prometheus alerts using LLM and MCP tools"
 requires-python = ">=3.14"  # Proactively migration to 3.14
 dependencies = [
     "python-telegram-bot[ext]>=22.7",
@@ -20,6 +20,7 @@ dependencies = [
     "lxml>=6.0.3",
     "markdown>=3.10.2",
     "discord-py>=2.7.1",
+    "aiotimebot==0.1.1",
 ]
 
 [tool.hatch.build.targets.wheel]

@@ -2,12 +2,12 @@
 
 The **SREBot Agent** is a lightweight bridge that connects your private infrastructure (Prometheus, Loki, Elasticsearch) to the [SREBot AI Control Plane](https://srebot.site360.tech).
 
-It listens to incident notifications in a Telegram channel, securely polls your internal tools using the **Model Context Protocol (MCP)**, and replies with a detailed AI-generated root-cause analysis.
+It listens to incident notifications in Telegram, Slack, Discord, or Time Messenger, securely polls your internal tools using the **Model Context Protocol (MCP)**, and replies with a detailed AI-generated root-cause analysis.
 
 ## How It Works
 
 ```text
-Alertmanager ──Telegram notification──► Channel
+Alertmanager ──chat notification──► Channel
                                              │
                                       SREBot Agent
                                              │
@@ -40,12 +40,26 @@ Alertmanager ──Telegram notification──► Channel
 2. **Configure environment:**
    ```bash
    cp .env.example .env
-   # Set TELEGRAM_BOT_TOKEN and SAAS_AGENT_TOKEN
+   # Set SAAS_AGENT_TOKEN and credentials for exactly one chat integration
    ```
 3. **Run:**
    ```bash
    docker compose up -d
    ```
+
+Only one chat integration may be configured in a bot process.
+
+### Time Messenger
+
+Time support uses the [`aiotimebot`](https://pypi.org/project/aiotimebot/) asyncio SDK and Time API v4. Create or obtain a bearer token for an account that belongs to the alert channel, then configure:
+
+```dotenv
+TIME_BASE_URL=https://time.example.com
+TIME_TOKEN=replace-with-Time-bearer-token
+TIME_CHANNEL_ID=replace-with-Time-channel-id
+```
+
+The integration receives posts over Time's authenticated WebSocket and uses REST for replies and edits. It has the same alert grouping, filtering, deduplication, automatic analysis, follow-up context, and `mute` / `unmute` / `status` command behavior as Telegram. Each analyzed alert group gets its own Time thread, so multi-alert notifications retain separate follow-up context; direct `@bot_username` mentions also start follow-up or general queries.
 
 ---
 

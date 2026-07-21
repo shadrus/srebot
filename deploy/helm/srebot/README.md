@@ -1,6 +1,6 @@
 # SREBot Helm Chart
 
-[SREBot](https://srebot.site360.tech) is an AI-powered incident analyzer for Prometheus and Alertmanager, integrated directly into Telegram.
+[SREBot](https://srebot.site360.tech) is an AI-powered incident analyzer for Prometheus and Alertmanager, integrated with Telegram, Slack, Discord, and Time Messenger.
 
 ## Pre-requisites
 
@@ -30,11 +30,13 @@ secrets:
   existingSecret: "srebot-secret"
 ```
 
-Your `srebot-secret` must contain the following keys:
+Your `srebot-secret` must contain `SAAS_AGENT_TOKEN` and the keys for exactly one chat integration. For Telegram:
 
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHANNEL_ID`
 - `SAAS_AGENT_TOKEN`
+
+For Time Messenger, use `TIME_BASE_URL`, `TIME_TOKEN`, and `TIME_CHANNEL_ID` instead of the Telegram keys.
 
 ### 2. Passing Tokens Directly
 
@@ -44,6 +46,16 @@ For quick local testing, you can pass the strings directly (the chart will gener
 secrets:
   telegram_bot_token: "telegram:token"
   telegram_channel_id: "telegram:channel_id"
+  saas_agent_token: "saas:token"
+```
+
+For Time Messenger:
+
+```yaml
+secrets:
+  time_base_url: "https://time.example.com"
+  time_token: "time:bearer-token"
+  time_channel_id: "time-channel-id"
   saas_agent_token: "saas:token"
 ```
 

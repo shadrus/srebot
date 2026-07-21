@@ -51,6 +51,15 @@ def test_extract_chat_id():
     # Slack channel_id as string
     assert extract_chat_id("C12345") == "slack:C12345"
 
+    # Time Messenger PostedEvent mock
+    time_event = MagicMock()
+    if hasattr(time_event, "chat_id"):
+        del time_event.chat_id
+    if hasattr(time_event, "channel"):
+        del time_event.channel
+    time_event.post.channel_id = "time-channel"
+    assert extract_chat_id(time_event) == "time:time-channel"
+
     # Unsupported argument
     assert extract_chat_id(12345) is None
     assert extract_chat_id() is None
