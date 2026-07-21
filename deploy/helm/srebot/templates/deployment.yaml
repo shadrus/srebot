@@ -42,11 +42,31 @@ spec:
                 secretKeyRef:
                   name: {{ if .Values.secrets.existingSecret }}{{ .Values.secrets.existingSecret }}{{ else }}{{ include "ai-observability-bot.fullname" . }}-secrets{{ end }}
                   key: TELEGRAM_BOT_TOKEN
+                  optional: true
             - name: TELEGRAM_CHANNEL_ID
               valueFrom:
                 secretKeyRef:
                   name: {{ if .Values.secrets.existingSecret }}{{ .Values.secrets.existingSecret }}{{ else }}{{ include "ai-observability-bot.fullname" . }}-secrets{{ end }}
                   key: TELEGRAM_CHANNEL_ID
+                  optional: true
+            - name: TIME_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ if .Values.secrets.existingSecret }}{{ .Values.secrets.existingSecret }}{{ else }}{{ include "ai-observability-bot.fullname" . }}-secrets{{ end }}
+                  key: TIME_BASE_URL
+                  optional: true
+            - name: TIME_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ if .Values.secrets.existingSecret }}{{ .Values.secrets.existingSecret }}{{ else }}{{ include "ai-observability-bot.fullname" . }}-secrets{{ end }}
+                  key: TIME_TOKEN
+                  optional: true
+            - name: TIME_CHANNEL_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ if .Values.secrets.existingSecret }}{{ .Values.secrets.existingSecret }}{{ else }}{{ include "ai-observability-bot.fullname" . }}-secrets{{ end }}
+                  key: TIME_CHANNEL_ID
+                  optional: true
             - name: SAAS_AGENT_TOKEN
               valueFrom:
                 secretKeyRef:

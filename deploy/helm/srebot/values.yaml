@@ -71,11 +71,14 @@ config:
 # Secrets (Existing secret or provided values)
 # ------------------------------------------------------------------------------
 secrets:
-  # If existingSecret is provided, telegram_bot_token and llm_api_key will be read from it.
+  # If existingSecret is provided, chat credentials and saas_agent_token are read from it.
   existingSecret: ""
-  # Otherwise, provide them here:
+  # Otherwise, provide credentials for exactly one chat integration here:
   telegram_bot_token: ""
   telegram_channel_id: ""
+  time_base_url: ""
+  time_token: ""
+  time_channel_id: ""
   saas_agent_token: ""
 
 # ------------------------------------------------------------------------------

@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     discord_bot_token: str = ""
     discord_channel_id: int = 0
 
+    # Time Messenger
+    time_base_url: str = ""
+    time_token: str = ""
+    time_channel_id: str = ""
+
     # SaaS Control Plane
     saas_ws_url: str = "wss://api.srebot.site360.tech/api/v1/agent/connect"
     saas_agent_token: str = ""

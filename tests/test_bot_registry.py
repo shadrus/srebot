@@ -72,6 +72,20 @@ def test_discord_configured_returns_discord_integration():
     assert isinstance(bot, DiscordBotIntegration)
 
 
+def test_time_configured_returns_time_integration():
+    """When all Time credentials are set, create_bot returns TimeBotIntegration."""
+    import srebot.bot  # noqa: F401
+    from srebot.bot.time import TimeBotIntegration
+
+    settings = _make_settings(
+        time_base_url="https://time.example.com",
+        time_token="fake-token",
+        time_channel_id="channel-1",
+    )
+    bot = create_bot(settings)
+    assert isinstance(bot, TimeBotIntegration)
+
+
 def test_no_integration_configured_raises():
     """When no integration has credentials, create_bot raises RuntimeError."""
 

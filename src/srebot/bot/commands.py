@@ -92,6 +92,10 @@ def extract_chat_id(*handler_args) -> str | None:
     if hasattr(arg, "channel") and hasattr(arg.channel, "id"):
         return f"discord:{arg.channel.id}"
 
+    # Time Messenger PostedEvent
+    if hasattr(arg, "post") and hasattr(arg.post, "channel_id"):
+        return f"time:{arg.post.channel_id}"
+
     # Slack channel ID is passed directly as a string in handler_args
     if isinstance(arg, str):
         return f"slack:{arg}"
