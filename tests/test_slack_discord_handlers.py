@@ -1,6 +1,6 @@
 """Tests for Slack and Discord bot handlers, validating feature parity with Telegram."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -168,6 +168,7 @@ class TestSlackHandlers:
             user_id="U_USER",
             chat_id="slack:C_SLACK",
             user_display_name="Yury",
+            on_tool_failure=ANY,
         )
         client.chat_update.assert_called_once_with(
             channel="C_SLACK",
@@ -177,6 +178,36 @@ class TestSlackHandlers:
         mock_store.register_bot_message.assert_called_once_with(
             "1111", "general_query", incident_id="incident-999"
         )
+
+    async def test_slack_mcp_failure_updates_indicator(self, mock_store, mock_settings):
+        app = MagicMock()
+        slack_register_handlers(app, mock_settings)
+        client = AsyncMock()
+        client.auth_test.return_value = {"user_id": "U_BOT", "user": "srebot"}
+        client.users_info.return_value = {"user": {"profile": {"display_name": "Yury"}}}
+        client.chat_postMessage.return_value = {"ts": "1111"}
+
+        async def followup_with_failure(**kwargs):
+            await kwargs["on_tool_failure"](["unavailable-tool"])
+            return "Partial answer", None, "general_query", None
+
+        with (
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.config.get_settings", return_value=mock_settings),
+            patch(
+                "srebot.bot.shared.handle_followup_question",
+                AsyncMock(side_effect=followup_with_failure),
+            ),
+        ):
+            handler = app.message.return_value.call_args[0][0]
+            await handler(
+                {"channel": "C_SLACK", "ts": "123", "user": "U_USER"},
+                {"text": "<@U_BOT> inspect", "user": "U_USER"},
+                client,
+            )
+
+        assert "sources are unavailable" in client.chat_update.await_args_list[0].kwargs["text"]
+        assert client.chat_update.await_args_list[1].kwargs["text"] == "Partial answer"
 
     async def test_slack_app_mention_reaches_followup_handler(self, mock_store, mock_settings):
         app = MagicMock()
@@ -215,6 +246,7 @@ class TestSlackHandlers:
             user_id="U_USER",
             chat_id="slack:C_SLACK",
             user_display_name="Yury",
+            on_tool_failure=ANY,
         )
 
     async def test_slack_unrelated_thread_is_ignored(self, mock_store, mock_settings):
@@ -492,11 +524,46 @@ class TestDiscordHandlers:
             user_id="777",
             chat_id="discord:9999",
             user_display_name="Yury",
+            on_tool_failure=ANY,
         )
         indicator.edit.assert_called_once_with(content="Memory is normal")
         mock_store.register_bot_message.assert_called_once_with(
             "8888", "general_query", incident_id="incident-888"
         )
+
+    async def test_discord_mcp_failure_updates_indicator(self, mock_store, mock_settings):
+        bot = MagicMock()
+        bot.user.id = 123456
+        bot.user.name = "srebot"
+        bot.user.mentioned_in.return_value = True
+        discord_register_handlers(bot, mock_settings)
+        handler = bot.event.call_args_list[0][0][0]
+
+        message = AsyncMock()
+        message.author = MagicMock(id=777, display_name="Yury", name="yury")
+        message.channel.id = 9999
+        message.content = "<@123456> inspect"
+        message.mentions = [bot.user]
+        message.reference = None
+        indicator = AsyncMock(id=8888)
+        message.reply.return_value = indicator
+
+        async def followup_with_failure(**kwargs):
+            await kwargs["on_tool_failure"](["unavailable-tool"])
+            return "Partial answer", None, "general_query", None
+
+        with (
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.config.get_settings", return_value=mock_settings),
+            patch(
+                "srebot.bot.shared.handle_followup_question",
+                AsyncMock(side_effect=followup_with_failure),
+            ),
+        ):
+            await handler(message)
+
+        assert "sources are unavailable" in indicator.edit.await_args_list[0].kwargs["content"]
+        assert indicator.edit.await_args_list[1].kwargs["content"] == "Partial answer"
 
     async def test_discord_on_message_empty_mention_deletes_indicator(
         self, mock_store, mock_settings

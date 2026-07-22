@@ -284,6 +284,7 @@ async def handle_followup_question(
     chat_id: str | None = None,
     allowed_servers: list[str] | None = None,
     user_display_name: str | None = None,
+    on_tool_failure: Callable[[list[str]], Awaitable[None]] | None = None,
 ) -> tuple[str, str | None, str | None, RejectionReason | None]:
     """
     Common follow-up processing pipeline shared by all platform integrations.
@@ -297,6 +298,7 @@ async def handle_followup_question(
         user_id: Platform user identifier (for rate limiting).
         chat_id: The chat identifier (to resolve active incident context for mentions).
         allowed_servers: MCP server names allowed for this cluster (passed to agent).
+        on_tool_failure: Optional callback invoked when MCP data sources fail.
 
     Returns:
         Tuple of (answer, new_incident_id, fingerprint_used, rejection_reason).
@@ -354,14 +356,31 @@ async def handle_followup_question(
         allowed_servers = None  # General queries can use all tools
 
     agent = llm_agent.get_agent()
-    answer, new_incident_id = await agent.followup(
-        question=question,
-        rca_text=rca_text,
-        alert_data=alert_data,
-        allowed_servers=allowed_servers,
-        parent_incident_id=parent_incident_id,
-        user_name=user_display_name,
-    )
+    try:
+        followup_kwargs = {
+            "question": question,
+            "rca_text": rca_text,
+            "alert_data": alert_data,
+            "allowed_servers": allowed_servers,
+            "parent_incident_id": parent_incident_id,
+            "user_name": user_display_name,
+        }
+        if on_tool_failure:
+            followup_kwargs["on_tool_failure"] = on_tool_failure
+        answer, new_incident_id = await agent.followup(**followup_kwargs)
+    except Exception:
+        logger.exception("Unhandled failure during follow-up analysis")
+        if settings.llm_response_language == "Russian":
+            answer = (
+                "⚠️ <b>Не удалось завершить анализ.</b> Произошла внутренняя ошибка; "
+                "попробуйте повторить запрос позже."
+            )
+        else:
+            answer = (
+                "⚠️ <b>Could not complete the analysis.</b> An internal error occurred; "
+                "please try again later."
+            )
+        new_incident_id = None
 
     if fp != "general_query":
         if new_incident_id:

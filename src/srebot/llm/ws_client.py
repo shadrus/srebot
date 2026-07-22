@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from websockets.asyncio.client import connect
@@ -11,6 +12,8 @@ from srebot.parser.alert_parser import update_remote_strategies
 logger = logging.getLogger(__name__)
 
 _MAX_TOOL_RESULT_CHARS = 8000
+
+ToolFailureCallback = Callable[[list[str]], Awaitable[None]]
 
 
 def _trim_tool_result(result: str, max_chars: int = _MAX_TOOL_RESULT_CHARS) -> str:
@@ -30,6 +33,70 @@ def _trim_tool_result(result: str, max_chars: int = _MAX_TOOL_RESULT_CHARS) -> s
     return (
         f"{result[:max_chars]}...\n\n[TRUNCATED_BY_BOT: tool output too long ({len(result)} chars)]"
     )
+
+
+def _is_tool_error(result: str) -> bool:
+    """Return whether a serialized tool result represents a failure."""
+    try:
+        payload = json.loads(result)
+    except json.JSONDecodeError, TypeError:
+        return result.lstrip().lower().startswith("error:")
+    return isinstance(payload, dict) and bool(payload.get("error"))
+
+
+def _tool_failure_notice(response_language: str, failed_tools: set[str]) -> str:
+    """Build a user-facing warning about unavailable data sources."""
+    tool_list = ", ".join(f"<code>{name}</code>" for name in sorted(failed_tools))
+    if response_language == "Russian":
+        return (
+            "⚠️ <b>Часть источников данных недоступна.</b> "
+            f"Не удалось выполнить: {tool_list}. Выводы анализа могут быть неполными."
+        )
+    return (
+        "⚠️ <b>Some data sources were unavailable.</b> "
+        f"Failed tools: {tool_list}. The analysis may be incomplete."
+    )
+
+
+async def _execute_tool_calls(
+    tools: list[dict[str, Any]],
+    tool_executor: Any,
+    log_context: str,
+    on_tool_failure: ToolFailureCallback | None = None,
+) -> tuple[list[dict[str, Any]], set[str]]:
+    """Execute one SaaS tool batch and report failures without aborting the analysis."""
+
+    async def run_tool(tool_call: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+        tool_call_id = str(tool_call.get("tool_call_id", ""))
+        tool_name = str(tool_call.get("tool_name", ""))
+        tool_args = tool_call.get("args", {})
+        logger.info("SaaS requested tool execution%s: %s", log_context, tool_name)
+
+        try:
+            args_str = json.dumps(tool_args) if isinstance(tool_args, dict) else tool_args
+            result = await asyncio.wait_for(tool_executor(tool_name, args_str), timeout=60)
+            result_str = _trim_tool_result(str(result))
+        except TimeoutError:
+            logger.error("Tool %s timed out after 60s", tool_name)
+            result_str = "Error: Tool execution timed out after 60s"
+        except Exception as exc:
+            logger.exception("Tool %s failed", tool_name)
+            result_str = f"Error: {exc}"
+
+        failed_name = tool_name if _is_tool_error(result_str) else None
+        return {"tool_call_id": tool_call_id, "data": result_str}, failed_name
+
+    executed = await asyncio.gather(*(run_tool(tool_call) for tool_call in tools))
+    results = [result for result, _failed_name in executed]
+    failed_tools = {failed_name for _result, failed_name in executed if failed_name}
+
+    if failed_tools and on_tool_failure:
+        try:
+            await on_tool_failure(sorted(failed_tools))
+        except Exception:
+            logger.warning("Could not publish MCP failure progress update", exc_info=True)
+
+    return results, failed_tools
 
 
 async def _send_ws_json(websocket: Any, payload: dict[str, Any], context: str) -> None:
@@ -144,6 +211,7 @@ class SaaSWSClient:
 
                     # 2. Loop to handle Server Events
                     used_tools: set[str] = set()
+                    failed_tools: set[str] = set()
                     while True:
                         response = await _recv_ws_json(websocket, "alert.loop")
                         event = response.get("event")
@@ -156,38 +224,24 @@ class SaaSWSClient:
                                     f"<code>{t}</code>" for t in sorted(used_tools)
                                 )
                                 content += f"\n\n<b>🛠 Tools used:</b> {tools_str}"
+                            if failed_tools:
+                                content += "\n\n" + _tool_failure_notice(
+                                    response_language, failed_tools
+                                )
                             return content, incident_id
 
                         elif event == "execute_tools":
                             tools = response.get("tools", [])
 
-                            async def run_tool(tc: dict[str, Any]) -> dict[str, Any]:
-                                t_id = str(tc.get("tool_call_id", ""))
-                                t_name = str(tc.get("tool_name", ""))
-                                t_args = tc.get("args", {})
-
-                                logger.info("SaaS requested tool execution: %s", t_name)
-                                if t_name:
-                                    used_tools.add(t_name)
-
-                                try:
-                                    args_str = (
-                                        json.dumps(t_args) if isinstance(t_args, dict) else t_args
-                                    )
-                                    result = await asyncio.wait_for(
-                                        tool_executor(t_name, args_str), timeout=60
-                                    )
-                                    result_str = _trim_tool_result(str(result))
-                                except TimeoutError:
-                                    logger.error("Tool %s timed out after 60s", t_name)
-                                    result_str = "Error: Tool execution timed out after 60s"
-                                except Exception as exc:
-                                    logger.exception("Tool %s failed", t_name)
-                                    result_str = f"Error: {exc}"
-
-                                return {"tool_call_id": t_id, "data": result_str}
-
-                            results = await asyncio.gather(*(run_tool(tc) for tc in tools))
+                            used_tools.update(
+                                str(tool.get("tool_name", ""))
+                                for tool in tools
+                                if tool.get("tool_name")
+                            )
+                            results, batch_failures = await _execute_tool_calls(
+                                tools, tool_executor, ""
+                            )
+                            failed_tools.update(batch_failures)
                             result_payload = {"event": "tools_result", "results": results}
                             await _send_ws_json(websocket, result_payload, "alert.tools")
 
@@ -223,6 +277,7 @@ class SaaSWSClient:
         parent_incident_id: str | None = None,
         response_language: str = "English",
         user_name: str | None = None,
+        on_tool_failure: ToolFailureCallback | None = None,
     ) -> tuple[str, str | None]:
         """
         Send a follow-up question to the SaaS Control Plane with RCA context.
@@ -234,12 +289,14 @@ class SaaSWSClient:
             tools_schema: List of OpenAI tool schemas allowed for this cluster.
             response_language: Language for the LLM response.
             user_name: Username or display name of the user asking the question.
+            on_tool_failure: Optional callback invoked with failed MCP tool names.
 
         Returns:
             The bot's follow-up answer as a string.
         """
         settings = get_settings()
         timeout = settings.followup_analysis_timeout
+        failed_tools: set[str] = set()
         try:
             logger.info("Connecting to SaaS Control Plane for follow-up analysis...")
             async with asyncio.timeout(timeout):
@@ -287,40 +344,29 @@ class SaaSWSClient:
                                     f"<code>{t}</code>" for t in sorted(used_tools)
                                 )
                                 content += f"\n\n<b>🛠 Tools used:</b> {tools_str}"
+                            if failed_tools:
+                                content += "\n\n" + _tool_failure_notice(
+                                    response_language, failed_tools
+                                )
                             return content, incident_id
 
                         elif event == "execute_tools":
                             tools = response.get("tools", [])
 
-                            async def run_tool(tc: dict) -> dict:
-                                t_id = str(tc.get("tool_call_id", ""))
-                                t_name = str(tc.get("tool_name", ""))
-                                t_args = tc.get("args", {})
+                            from srebot.mcp.registry import call_tool
 
-                                logger.info("SaaS requested tool execution (follow-up): %s", t_name)
-                                if t_name:
-                                    used_tools.add(t_name)
-
-                                try:
-                                    from srebot.mcp.registry import call_tool
-
-                                    args_str = (
-                                        json.dumps(t_args) if isinstance(t_args, dict) else t_args
-                                    )
-                                    result = await asyncio.wait_for(
-                                        call_tool(t_name, args_str), timeout=60
-                                    )
-                                    result_str = _trim_tool_result(str(result))
-                                except TimeoutError:
-                                    logger.error("Tool %s timed out after 60s", t_name)
-                                    result_str = "Error: Tool execution timed out after 60s"
-                                except Exception as exc:
-                                    logger.exception("Tool %s failed", t_name)
-                                    result_str = f"Error: {exc}"
-
-                                return {"tool_call_id": t_id, "data": result_str}
-
-                            results = await asyncio.gather(*(run_tool(tc) for tc in tools))
+                            used_tools.update(
+                                str(tool.get("tool_name", ""))
+                                for tool in tools
+                                if tool.get("tool_name")
+                            )
+                            results, batch_failures = await _execute_tool_calls(
+                                tools,
+                                call_tool,
+                                " (follow-up)",
+                                on_tool_failure,
+                            )
+                            failed_tools.update(batch_failures)
                             result_payload = {"event": "tools_result", "results": results}
                             await _send_ws_json(websocket, result_payload, "followup.tools")
 
@@ -337,10 +383,12 @@ class SaaSWSClient:
 
         except TimeoutError:
             logger.error("Follow-up analysis timed out after %d seconds", timeout)
-            return (
-                "⚠️ <b>Analysis timed out:</b> The AI took too long to respond. Please try again.",
-                None,
+            message = (
+                "⚠️ <b>Analysis timed out:</b> The AI took too long to respond. Please try again."
             )
+            if failed_tools:
+                message += "\n\n" + _tool_failure_notice(response_language, failed_tools)
+            return message, None
         except json.JSONDecodeError as exc:
             logger.exception("Invalid JSON received from SaaS during follow-up analysis")
             return f"⚠️ Invalid response from AI Control Plane: {exc}", None

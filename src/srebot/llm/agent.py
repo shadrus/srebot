@@ -1,6 +1,7 @@
 """LLM agent proxy — delegates analysis to the SaaS Control Plane via WebSocket."""
 
 import logging
+from collections.abc import Awaitable, Callable
 
 from srebot.config import get_mcp_registry, get_settings
 from srebot.llm.ws_client import SaaSWSClient
@@ -78,6 +79,7 @@ class AlertAnalysisAgent:
         allowed_servers: list[str] | None = None,
         parent_incident_id: str | None = None,
         user_name: str | None = None,
+        on_tool_failure: Callable[[list[str]], Awaitable[None]] | None = None,
     ) -> tuple[str, str | None]:
         """
         Send a follow-up question to the SaaS backend with previous RCA as context.
@@ -90,6 +92,7 @@ class AlertAnalysisAgent:
                 If None, all registered servers are used.
             parent_incident_id: ID of the parent incident.
             user_name: Username or display name of the user asking the question.
+            on_tool_failure: Optional callback invoked with failed MCP tool names.
 
         Returns:
             Tuple of (answer, new_incident_id).
@@ -108,6 +111,7 @@ class AlertAnalysisAgent:
             parent_incident_id=parent_incident_id,
             response_language=self._response_language,
             user_name=user_name,
+            on_tool_failure=on_tool_failure,
         )
 
     async def parse_raw_text(self, text: str) -> list[Alert]:

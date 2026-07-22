@@ -7,6 +7,7 @@ from discord.ext import commands
 
 import srebot.config as config
 import srebot.state.store as state_store
+from srebot.bot.messages import get_chat_message
 from srebot.bot.shared import ChatAdapter, process_alert_text
 from srebot.config import Settings
 from srebot.parser.alert_parser import Alert
@@ -16,41 +17,9 @@ logger = logging.getLogger(__name__)
 DISCORD_MESSAGE_LIMIT = 1900
 
 
-MESSAGES = {
-    "Russian": {
-        "analyzing_alerts": "🔍 *Анализирую {count} алерт(ов)…*",
-        "ttl_footer": "\n\n*💬 Задайте уточняющие вопросы ответом на это сообщение в течение {hours} ч.*",  # noqa: E501
-        "analyzing_followup": "*🔍 Анализирую...*",
-        "cooldown": "*⏳ Подождите немного перед следующим вопросом.*",
-        "limit_reached": "*🔒 Лимит уточняющих вопросов по этому инциденту исчерпан ({current}/{max}).*",  # noqa: E501
-        "resolved_alert": ("✅ **Решено:** `{alertname}`\n**Кластер:** {cluster} | **Job:** {job}"),
-        "new_alert": (
-            "🚨 **Новый алерт:** `{alertname}`\n"
-            "**Кластер:** {cluster} | **Job:** {job}\n\n"
-            "*💬 Ответьте на это сообщение, чтобы запустить AI-анализ.*"
-        ),
-    },
-    "English": {
-        "analyzing_alerts": "🔍 *Analyzing {count} alert(s)…*",
-        "ttl_footer": "\n\n*💬 Ask follow-up questions by replying to this message within {hours} h.*",  # noqa: E501
-        "analyzing_followup": "*🔍 Analyzing...*",
-        "cooldown": "*⏳ Please wait a bit before the next question.*",
-        "limit_reached": "*🔒 Limit of follow-up questions for this incident reached ({current}/{max}).*",  # noqa: E501
-        "resolved_alert": (
-            "✅ **Resolved:** `{alertname}`\n**Cluster:** {cluster} | **Job:** {job}"
-        ),
-        "new_alert": (
-            "🚨 **New Alert:** `{alertname}`\n"
-            "**Cluster:** {cluster} | **Job:** {job}\n\n"
-            "*💬 Reply to this message to run AI analysis.*"
-        ),
-    },
-}
-
-
 def get_msg(key: str) -> str:
     lang = config.get_settings().llm_response_language
-    return MESSAGES.get(lang, MESSAGES["English"]).get(key, "")
+    return get_chat_message(key, lang, "discord")
 
 
 def split_discord_message(text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
@@ -354,12 +323,17 @@ def register_handlers(bot: commands.Bot, settings: Settings) -> None:
                         logger.warning("Could not delete Discord follow-up indicator: %s", exc)
                 return
 
+            async def report_tool_failure(_failed_tools: list[str]) -> None:
+                if indicator and not settings.dry_run:
+                    await indicator.edit(content=get_msg("mcp_failure_progress"))
+
             answer, new_incident_id, fp_used, rejection = await handle_followup_question(
                 reply_to_id=reply_to_id,
                 question=cleaned_text,
                 user_id=user_id,
                 chat_id=chat_id,
                 user_display_name=user_display_name,
+                on_tool_failure=report_tool_failure,
             )
 
             if rejection is None:

@@ -11,6 +11,7 @@ from aiotimebot.api.models.patch_post_body import PatchPostBody
 
 import srebot.config as config
 import srebot.state.store as state_store
+from srebot.bot.messages import get_chat_message
 from srebot.bot.shared import (
     ChatAdapter,
     RejectionReason,
@@ -24,38 +25,6 @@ from srebot.parser.alert_parser import Alert
 logger = logging.getLogger(__name__)
 
 
-MESSAGES = {
-    "Russian": {
-        "analyzing_alerts": "🔍 *Анализирую {count} алерт(ов)…*",
-        "ttl_footer": "\n\n_💬 Задайте уточняющие вопросы в этом треде в течение {hours} ч._",
-        "analyzing_followup": "🔍 _Анализирую..._",
-        "cooldown": "⏳ _Подождите немного перед следующим вопросом._",
-        "limit_reached": "🔒 _Лимит уточняющих вопросов по этому инциденту исчерпан ({current}/{max})._",  # noqa: E501
-        "resolved_alert": ("✅ **Решено:** `{alertname}`\n**Кластер:** {cluster} | **Job:** {job}"),
-        "new_alert": (
-            "🚨 **Новый алерт:** `{alertname}`\n"
-            "**Кластер:** {cluster} | **Job:** {job}\n\n"
-            "_💬 Ответьте в этом треде, чтобы запустить AI-анализ._"
-        ),
-    },
-    "English": {
-        "analyzing_alerts": "🔍 *Analyzing {count} alert(s)…*",
-        "ttl_footer": "\n\n_💬 Ask follow-up questions in this thread within {hours} h._",
-        "analyzing_followup": "🔍 _Analyzing..._",
-        "cooldown": "⏳ _Please wait a bit before the next question._",
-        "limit_reached": "🔒 _Limit of follow-up questions for this incident reached ({current}/{max})._",  # noqa: E501
-        "resolved_alert": (
-            "✅ **Resolved:** `{alertname}`\n**Cluster:** {cluster} | **Job:** {job}"
-        ),
-        "new_alert": (
-            "🚨 **New Alert:** `{alertname}`\n"
-            "**Cluster:** {cluster} | **Job:** {job}\n\n"
-            "_💬 Reply in this thread to run AI analysis._"
-        ),
-    },
-}
-
-
 @dataclass(frozen=True, slots=True)
 class TimeBotIdentity:
     """Authenticated Time account identity used for self-filtering and mentions."""
@@ -67,7 +36,7 @@ class TimeBotIdentity:
 def get_msg(key: str) -> str:
     """Return a localized Time Messenger UI string."""
     language = config.get_settings().llm_response_language
-    return MESSAGES.get(language, MESSAGES["English"]).get(key, "")
+    return get_chat_message(key, language, "time")
 
 
 def clean_mentions(text: str, bot_username: str | None) -> str:
@@ -345,12 +314,17 @@ async def handle_posted_event(
                     logger.warning("Could not delete Time follow-up indicator: %s", exc)
             return Propagation.STOP
 
+        async def report_tool_failure(_failed_tools: list[str]) -> None:
+            if indicator_id and not settings.dry_run:
+                await _edit_post(client, indicator_id, get_msg("mcp_failure_progress"))
+
         answer, new_incident_id, fp_used, rejection = await handle_followup_question(
             reply_to_id=root_id if thread_has_context else None,
             question=cleaned_text,
             user_id=post.user_id,
             chat_id=f"time:{post.channel_id}",
             user_display_name=await _get_user_display_name(client, post.user_id),
+            on_tool_failure=report_tool_failure,
         )
 
         if rejection == RejectionReason.NO_CONTEXT:

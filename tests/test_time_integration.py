@@ -1,6 +1,6 @@
 """Tests for the Time Messenger integration."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 from aiotimebot import Propagation
 
@@ -168,12 +168,52 @@ async def test_thread_followup_uses_root_incident_context():
         user_id="user-1",
         chat_id="time:channel-1",
         user_display_name="@engineer",
+        on_tool_failure=ANY,
     )
     assert store.register_bot_message.await_args_list == [
         (("indicator-1", "group-fp"), {"incident_id": "incident-2"}),
         (("alert-root", "group-fp"), {"incident_id": "incident-2"}),
     ]
     store.set_last_active_incident.assert_awaited_once_with("time:channel-1", "group-fp")
+
+
+async def test_time_mcp_failure_updates_indicator():
+    event = _event(text="why?", root_id="alert-root")
+    identity = TimeBotIdentity(user_id="bot-user", username="srebot")
+    client = MagicMock()
+    store = AsyncMock()
+    store.get_bot_message_context.return_value = {
+        "fingerprint": "group-fp",
+        "incident_id": "incident-1",
+    }
+
+    async def followup_with_failure(**kwargs):
+        await kwargs["on_tool_failure"](["unavailable-tool"])
+        return "Partial answer", None, "group-fp", None
+
+    with (
+        patch("srebot.bot.time.handlers.state_store.get_store", return_value=store),
+        patch(
+            "srebot.bot.time.handlers._send_thread_message",
+            AsyncMock(return_value="indicator-1"),
+        ),
+        patch(
+            "srebot.bot.time.handlers._get_user_display_name",
+            AsyncMock(return_value="@engineer"),
+        ),
+        patch(
+            "srebot.bot.time.handlers.handle_followup_question",
+            AsyncMock(side_effect=followup_with_failure),
+        ),
+        patch("srebot.bot.time.handlers._edit_post", AsyncMock()) as edit_post,
+        patch(
+            "srebot.bot.time.handlers._finish_followup",
+            AsyncMock(return_value="indicator-1"),
+        ),
+    ):
+        await handle_posted_event(event, client, _settings(), identity)
+
+    assert "sources are unavailable" in edit_post.await_args.args[2]
 
 
 async def test_direct_mention_starts_general_followup():
@@ -210,6 +250,7 @@ async def test_direct_mention_starts_general_followup():
         user_id="user-1",
         chat_id="time:channel-1",
         user_display_name=None,
+        on_tool_failure=ANY,
     )
     assert store.register_bot_message.await_args_list == [
         (("indicator-1", "general_query"), {"incident_id": "incident-general"}),

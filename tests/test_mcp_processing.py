@@ -1,6 +1,7 @@
 import json
+from unittest.mock import AsyncMock
 
-from srebot.llm.ws_client import _trim_tool_result
+from srebot.llm.ws_client import _execute_tool_calls, _is_tool_error, _trim_tool_result
 from srebot.mcp.registry import _process_tool_result
 
 
@@ -127,3 +128,34 @@ def test_trim_tool_result_limits_websocket_payload():
 
     assert result.startswith("A" * 100)
     assert "[TRUNCATED_BY_BOT" in result
+
+
+def test_is_tool_error_recognizes_mcp_error_envelopes():
+    assert _is_tool_error('{"error": "connection refused"}') is True
+    assert _is_tool_error("Error: Tool execution timed out after 60s") is True
+    assert _is_tool_error('{"items": []}') is False
+
+
+async def test_execute_tool_calls_reports_failure_and_keeps_successful_results():
+    async def executor(name: str, _arguments: str) -> str:
+        if name == "unavailable-tool":
+            return '{"error": "connection refused"}'
+        return '{"items": [1]}'
+
+    callback = AsyncMock()
+    results, failed_tools = await _execute_tool_calls(
+        [
+            {"tool_call_id": "1", "tool_name": "available-tool", "args": {}},
+            {"tool_call_id": "2", "tool_name": "unavailable-tool", "args": {}},
+        ],
+        executor,
+        " (test)",
+        callback,
+    )
+
+    assert results == [
+        {"tool_call_id": "1", "data": '{"items": [1]}'},
+        {"tool_call_id": "2", "data": '{"error": "connection refused"}'},
+    ]
+    assert failed_tools == {"unavailable-tool"}
+    callback.assert_awaited_once_with(["unavailable-tool"])

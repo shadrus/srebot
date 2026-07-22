@@ -8,6 +8,7 @@ from telegram.ext import ContextTypes
 
 import srebot.config as config
 import srebot.state.store as state_store
+from srebot.bot.messages import get_chat_message
 from srebot.bot.shared import (
     ChatAdapter,
     RejectionReason,
@@ -20,45 +21,9 @@ from srebot.parser.alert_parser import Alert
 logger = logging.getLogger(__name__)
 
 
-MESSAGES = {
-    "Russian": {
-        "analyzing_alerts": "🔍 <b>Анализирую {count} алерт(ов)…</b>",
-        "ttl_footer": "\n\n<i>💬 Задайте уточняющие вопросы ответом на это сообщение в течение {hours} ч.</i>",  # noqa: E501
-        "analyzing_followup": "🔍 <i>Анализирую...</i>",
-        "cooldown": "⏳ <i>Подождите немного перед следующим вопросом.</i>",
-        "limit_reached": "🔒 <i>Лимит уточняющих вопросов по этому инциденту исчерпан ({current}/{max}).</i>",  # noqa: E501
-        "resolved_alert": (
-            "✅ <b>Решено:</b> <code>{alertname}</code>\n"
-            "<b>Кластер:</b> {cluster} | <b>Job:</b> {job}"
-        ),
-        "new_alert": (
-            "🚨 <b>Новый алерт:</b> <code>{alertname}</code>\n"
-            "<b>Кластер:</b> {cluster} | <b>Job:</b> {job}\n\n"
-            "<i>💬 Ответьте (Reply) на это сообщение, чтобы запустить AI-анализ.</i>"
-        ),
-    },
-    "English": {
-        "analyzing_alerts": "🔍 <b>Analyzing {count} alert(s)…</b>",
-        "ttl_footer": "\n\n<i>💬 Ask follow-up questions by replying to this message within {hours} h.</i>",  # noqa: E501
-        "analyzing_followup": "🔍 <i>Analyzing...</i>",
-        "cooldown": "⏳ <i>Please wait a bit before the next question.</i>",
-        "limit_reached": "🔒 <i>Limit of follow-up questions for this incident reached ({current}/{max}).</i>",  # noqa: E501
-        "resolved_alert": (
-            "✅ <b>Resolved:</b> <code>{alertname}</code>\n"
-            "<b>Cluster:</b> {cluster} | <b>Job:</b> {job}"
-        ),
-        "new_alert": (
-            "🚨 <b>New Alert:</b> <code>{alertname}</code>\n"
-            "<b>Cluster:</b> {cluster} | <b>Job:</b> {job}\n\n"
-            "<i>💬 Reply to this message to run AI analysis.</i>"
-        ),
-    },
-}
-
-
 def get_msg(key: str) -> str:
     lang = config.get_settings().llm_response_language
-    return MESSAGES.get(lang, MESSAGES["English"]).get(key, "")
+    return get_chat_message(key, lang, "telegram")
 
 
 async def _reply(source_msg: Message, text: str, dry_run: bool) -> Message | None:
@@ -312,12 +277,20 @@ async def followup_reply_handler(update: Update, context: ContextTypes.DEFAULT_T
                 logger.warning("Could not delete follow-up indicator: %s", exc)
         return
 
+    async def report_tool_failure(_failed_tools: list[str]) -> None:
+        if indicator:
+            await indicator.edit_text(
+                get_msg("mcp_failure_progress"),
+                parse_mode=ParseMode.HTML,
+            )
+
     answer, new_incident_id, fp_used, rejection = await handle_followup_question(
         reply_to_id=reply_to_id,
         question=cleaned_question,
         user_id=user_id,
         chat_id=chat_id,
         user_display_name=user_display_name,
+        on_tool_failure=report_tool_failure,
     )
 
     if rejection is not None:

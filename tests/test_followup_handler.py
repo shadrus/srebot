@@ -251,6 +251,31 @@ class TestFollowupReplyHandler:
         mock_fq.assert_called_once()
         update.message.reply_text.assert_called()
 
+    async def test_mcp_failure_updates_indicator_while_analysis_continues(
+        self, mock_settings, mock_store, mock_context
+    ):
+        update = self._make_update()
+        indicator = update.message.reply_text.return_value
+
+        async def followup_with_tool_failure(**kwargs):
+            await kwargs["on_tool_failure"](["unavailable-tool"])
+            return "Partial answer", "incident456", "fp123", None
+
+        with (
+            patch(
+                "srebot.bot.telegram.handlers.handle_followup_question",
+                AsyncMock(side_effect=followup_with_tool_failure),
+            ),
+            patch("srebot.config.get_settings", return_value=mock_settings),
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+        ):
+            await followup_reply_handler(update, mock_context)
+
+        progress_text = indicator.edit_text.await_args_list[0].args[0]
+        final_text = indicator.edit_text.await_args_list[1].args[0]
+        assert "sources are unavailable" in progress_text
+        assert "Partial answer" in final_text
+
     async def test_ignored_when_no_context(self, mock_settings, mock_context):
         update = self._make_update()
         indicator = update.message.reply_text.return_value
@@ -356,6 +381,27 @@ class TestFollowupReplyHandler:
 
 
 class TestHandleFollowupQuestionDirect:
+    async def test_agent_failure_returns_user_facing_message(
+        self, mock_store, mock_agent, mock_settings
+    ):
+        mock_settings.llm_response_language = "Russian"
+        mock_agent.followup.side_effect = RuntimeError("Control Plane disconnected")
+        with (
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.llm.agent.get_agent", return_value=mock_agent),
+            patch("srebot.config.get_settings", return_value=mock_settings),
+        ):
+            answer, incident_id, fingerprint, rejection = await handle_followup_question(
+                reply_to_id=None,
+                question="Что происходит?",
+                user_id="777",
+            )
+
+        assert "Не удалось завершить анализ" in answer
+        assert incident_id is None
+        assert fingerprint == "general_query"
+        assert rejection is None
+
     async def test_expired_context_on_reply_falls_back_to_general_query(
         self, mock_store, mock_agent, mock_settings
     ):
