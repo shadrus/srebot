@@ -139,12 +139,18 @@ class TestGroupKey:
 class TestProcessAlertText:
     async def test_non_alert_text_skips_handler(self):
         handler = AsyncMock()
-        await process_alert_text("Hello, World!", handler)
+        agent = MagicMock()
+        agent.parse_raw_text = AsyncMock(return_value=[])
+        with patch("srebot.llm.agent.get_agent", return_value=agent):
+            await process_alert_text("Hello, World!", handler)
         handler.assert_not_called()
 
     async def test_empty_text_skips_handler(self):
         handler = AsyncMock()
-        await process_alert_text("", handler)
+        agent = MagicMock()
+        agent.parse_raw_text = AsyncMock(return_value=[])
+        with patch("srebot.llm.agent.get_agent", return_value=agent):
+            await process_alert_text("", handler)
         handler.assert_not_called()
 
     async def test_single_alert_calls_handler_once(self):

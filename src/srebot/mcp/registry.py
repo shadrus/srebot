@@ -146,12 +146,16 @@ async def register_external_mcp(
         causes = _unpack_exceptions(e)
         detail = "; ".join(f"{type(c).__name__}: {c}" for c in causes) if causes else str(e)
         logger.error("Failed to connect to MCP server %s after TCP ready: %s", name, detail)
+        try:
+            await client.close()
+        except BaseException:
+            logger.debug("Ignoring MCP cleanup failure after unsuccessful connect", exc_info=True)
         raise
 
     try:
-        _EXTERNAL_CLIENTS.append(client)
-
         tools = await client.get_tools_as_openai_schema()
+        prepared_tools: list[dict] = []
+        prepared_mappings: dict[str, tuple[Any, str]] = {}
         registered = 0
         skipped = 0
         for tool in tools:
@@ -170,16 +174,12 @@ async def register_external_mcp(
             prefixed_name = f"{name}__{original_name}"
             tool["function"]["name"] = prefixed_name
 
-            _EXTERNAL_TOOL_SCHEMAS.append(tool)
-            _EXTERNAL_TOOL_TO_CLIENT[prefixed_name] = (client, original_name)
+            prepared_tools.append(tool)
+            prepared_mappings[prefixed_name] = (client, original_name)
             registered += 1
 
         mode = "read_only" if read_only else "full"
-        registered_names = [
-            t["function"]["name"]
-            for t in _EXTERNAL_TOOL_SCHEMAS
-            if t["function"]["name"].startswith(f"{name}__")
-        ]
+        registered_names = [tool["function"]["name"] for tool in prepared_tools]
         logger.info(
             "Registered %d tools from MCP server %r (%s mode, skipped %d write tools)",
             registered,
@@ -188,11 +188,21 @@ async def register_external_mcp(
             skipped,
         )
         logger.debug("  Registered tools: %s", registered_names)
+
+        # Publish only after the complete schema has been validated and transformed.
+        # No awaits occur between these mutations, so registry readers see all or nothing.
+        _EXTERNAL_CLIENTS.append(client)
+        _EXTERNAL_TOOL_SCHEMAS.extend(prepared_tools)
+        _EXTERNAL_TOOL_TO_CLIENT.update(prepared_mappings)
     except BaseException as e:
         # ExceptionGroup (TaskGroup) wraps the real error — unwrap for clarity
         causes = _unpack_exceptions(e)
         detail = "; ".join(f"{type(c).__name__}: {c}" for c in causes) if causes else str(e)
         logger.error("Failed to register tools from MCP server %s: %s", name, detail)
+        try:
+            await client.close()
+        except BaseException:
+            logger.debug("Ignoring MCP cleanup failure after tool registration", exc_info=True)
         raise
 
 

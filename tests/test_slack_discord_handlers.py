@@ -428,6 +428,7 @@ class TestSlackHandlers:
             patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
             patch("srebot.config.get_settings", return_value=mock_settings),
             patch("srebot.bot.commands.handle_command", AsyncMock(return_value=None)) as mock_hc,
+            patch("srebot.bot.slack.handlers.process_alert_text", AsyncMock()),
         ):
             message_decorator = app.message()
             handler_func = message_decorator.call_args[0][0]
@@ -795,6 +796,7 @@ class TestDiscordHandlers:
             patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
             patch("srebot.config.get_settings", return_value=mock_settings),
             patch("srebot.bot.commands.handle_command", AsyncMock(return_value=None)) as mock_hc,
+            patch("srebot.bot.discord.handlers.process_alert_text", AsyncMock()),
         ):
             await on_message_func(message)
 
