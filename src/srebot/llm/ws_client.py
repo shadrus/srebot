@@ -7,6 +7,7 @@ from typing import Any
 from websockets.asyncio.client import connect
 
 from srebot.config import get_settings
+from srebot.messages import get_chat_message
 from srebot.parser.alert_parser import update_remote_strategies
 
 logger = logging.getLogger(__name__)
@@ -45,17 +46,22 @@ def _is_tool_error(result: str) -> bool:
 
 
 def _tool_failure_notice(response_language: str, failed_tools: set[str]) -> str:
-    """Build a user-facing warning about unavailable data sources."""
-    tool_list = ", ".join(f"<code>{name}</code>" for name in sorted(failed_tools))
-    if response_language == "Russian":
-        return (
-            "⚠️ <b>Часть источников данных недоступна.</b> "
-            f"Не удалось выполнить: {tool_list}. Выводы анализа могут быть неполными."
-        )
-    return (
-        "⚠️ <b>Some data sources were unavailable.</b> "
-        f"Failed tools: {tool_list}. The analysis may be incomplete."
+    """Build a Markdown warning about unavailable data sources."""
+    return get_chat_message("mcp_failure_result", response_language, "markdown").format(
+        tools=_format_tool_names(failed_tools)
     )
+
+
+def _tools_used_notice(response_language: str, used_tools: set[str]) -> str:
+    """Build a Markdown summary of tools used during analysis."""
+    return get_chat_message("tools_used", response_language, "markdown").format(
+        tools=_format_tool_names(used_tools)
+    )
+
+
+def _format_tool_names(tool_names: set[str]) -> str:
+    """Format tool names as inline Markdown code."""
+    return ", ".join(f"`{name}`" for name in sorted(tool_names))
 
 
 async def _execute_tool_calls(
@@ -220,10 +226,9 @@ class SaaSWSClient:
                             content = response.get("text", "")
                             incident_id = response.get("incident_id")
                             if used_tools:
-                                tools_str = ", ".join(
-                                    f"<code>{t}</code>" for t in sorted(used_tools)
+                                content += "\n\n" + _tools_used_notice(
+                                    response_language, used_tools
                                 )
-                                content += f"\n\n<b>🛠 Tools used:</b> {tools_str}"
                             if failed_tools:
                                 content += "\n\n" + _tool_failure_notice(
                                     response_language, failed_tools
@@ -340,10 +345,9 @@ class SaaSWSClient:
                             content = response.get("text", "")
                             incident_id = response.get("incident_id")
                             if used_tools:
-                                tools_str = ", ".join(
-                                    f"<code>{t}</code>" for t in sorted(used_tools)
+                                content += "\n\n" + _tools_used_notice(
+                                    response_language, used_tools
                                 )
-                                content += f"\n\n<b>🛠 Tools used:</b> {tools_str}"
                             if failed_tools:
                                 content += "\n\n" + _tool_failure_notice(
                                     response_language, failed_tools

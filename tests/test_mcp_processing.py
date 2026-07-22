@@ -1,7 +1,13 @@
 import json
 from unittest.mock import AsyncMock
 
-from srebot.llm.ws_client import _execute_tool_calls, _is_tool_error, _trim_tool_result
+from srebot.llm.ws_client import (
+    _execute_tool_calls,
+    _is_tool_error,
+    _tool_failure_notice,
+    _tools_used_notice,
+    _trim_tool_result,
+)
 from srebot.mcp.registry import _process_tool_result
 
 
@@ -159,3 +165,14 @@ async def test_execute_tool_calls_reports_failure_and_keeps_successful_results()
     ]
     assert failed_tools == {"unavailable-tool"}
     callback.assert_awaited_once_with(["unavailable-tool"])
+
+
+def test_dynamic_tool_notices_use_markdown_instead_of_platform_html():
+    tools_used = _tools_used_notice("English", {"prometheus__query"})
+    failure = _tool_failure_notice("Russian", {"elasticsearch__search"})
+
+    assert tools_used == "**🛠 Tools used:** `prometheus__query`"
+    assert "**Часть источников данных недоступна.**" in failure
+    assert "`elasticsearch__search`" in failure
+    assert "<b>" not in tools_used + failure
+    assert "<code>" not in tools_used + failure

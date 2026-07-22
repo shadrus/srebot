@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-MessageFormat = Literal["telegram", "slack", "discord", "time"]
+MessageFormat = Literal["markdown", "telegram", "slack", "discord", "time"]
 
 _MESSAGES = {
     "Russian": {
@@ -15,6 +15,11 @@ _MESSAGES = {
         "mcp_failure_progress": (
             "⚠️ [italic]Часть источников данных недоступна. "
             "Продолжаю анализ по доступным данным...[/italic]"
+        ),
+        "tools_used": "[bold]🛠 Использованные инструменты:[/bold] {tools}",
+        "mcp_failure_result": (
+            "⚠️ [bold]Часть источников данных недоступна.[/bold] "
+            "Не удалось выполнить: {tools}. Выводы анализа могут быть неполными."
         ),
         "cooldown": "⏳ [italic]Подождите немного перед следующим вопросом.[/italic]",
         "limit_reached": (
@@ -42,6 +47,11 @@ _MESSAGES = {
             "⚠️ [italic]Some data sources are unavailable. "
             "Continuing with available data...[/italic]"
         ),
+        "tools_used": "[bold]🛠 Tools used:[/bold] {tools}",
+        "mcp_failure_result": (
+            "⚠️ [bold]Some data sources were unavailable.[/bold] "
+            "Failed tools: {tools}. The analysis may be incomplete."
+        ),
         "cooldown": "⏳ [italic]Please wait a bit before the next question.[/italic]",
         "limit_reached": (
             "🔒 [italic]Limit of follow-up questions for this incident reached "
@@ -60,6 +70,7 @@ _MESSAGES = {
 }
 
 _MARKUP = {
+    "markdown": {"bold": ("**", "**"), "italic": ("*", "*"), "code": ("`", "`")},
     "telegram": {"bold": ("<b>", "</b>"), "italic": ("<i>", "</i>"), "code": ("<code>", "</code>")},  # noqa: E501
     "slack": {"bold": ("*", "*"), "italic": ("_", "_"), "code": ("`", "`")},
     "discord": {"bold": ("**", "**"), "italic": ("*", "*"), "code": ("`", "`")},

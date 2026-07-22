@@ -7,9 +7,9 @@ from discord.ext import commands
 
 import srebot.config as config
 import srebot.state.store as state_store
-from srebot.bot.messages import get_chat_message
 from srebot.bot.shared import ChatAdapter, process_alert_text
 from srebot.config import Settings
+from srebot.messages import get_chat_message
 from srebot.parser.alert_parser import Alert
 
 logger = logging.getLogger(__name__)

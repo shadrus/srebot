@@ -1,11 +1,12 @@
 import pytest
 
-from srebot.bot.messages import get_chat_message
+from srebot.messages import get_chat_message
 
 
 @pytest.mark.parametrize(
     ("message_format", "bold", "italic", "code"),
     [
+        ("markdown", ("**", "**"), ("*", "*"), ("`", "`")),
         ("telegram", ("<b>", "</b>"), ("<i>", "</i>"), ("<code>", "</code>")),
         ("slack", ("*", "*"), ("_", "_"), ("`", "`")),
         ("discord", ("**", "**"), ("*", "*"), ("`", "`")),
