@@ -122,7 +122,7 @@ async def test_concurrent_resolution_during_analysis(mock_store, mock_agent, moc
     # 1. UI was updated with analysis anyway
     assert mock_message.get_bot().edit_message_text.call_count == 1
     call_args = mock_message.get_bot().edit_message_text.call_args
-    assert call_args[1]["text"].startswith("<b>Full Analysis</b>")
+    assert "Full Analysis" in call_args[1]["text"]
     assert call_args[1].get("parse_mode") == ANY_PARSE_MODE
 
     # 2. mark_firing was NOT called because status was not 'analyzing'

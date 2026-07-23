@@ -2,12 +2,128 @@
 
 import json
 import logging
+from dataclasses import dataclass
+from enum import StrEnum
 
 import redis.asyncio as aioredis
 
 from srebot.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+_ADMIT_FOLLOWUP_SCRIPT = """
+local function top_level_value_is_array(raw, key)
+    local quoted_key = '"' .. key .. '"'
+    local depth = 0
+    local in_string = false
+    local escaped = false
+    local found = false
+    local index = 1
+    while index <= string.len(raw) do
+        local char = string.sub(raw, index, index)
+        if in_string then
+            if escaped then
+                escaped = false
+            elseif char == '\\\\' then
+                escaped = true
+            elseif char == '"' then
+                in_string = false
+            end
+        elseif char == '"' then
+            if depth == 1
+                and string.sub(raw, index, index + string.len(quoted_key) - 1) == quoted_key then
+                local cursor = index + string.len(quoted_key)
+                while string.match(string.sub(raw, cursor, cursor), '%s') do
+                    cursor = cursor + 1
+                end
+                if string.sub(raw, cursor, cursor) == ':' then
+                    if found then
+                        return false
+                    end
+                    found = true
+                    cursor = cursor + 1
+                    while string.match(string.sub(raw, cursor, cursor), '%s') do
+                        cursor = cursor + 1
+                    end
+                    if string.sub(raw, cursor, cursor) ~= '[' then
+                        return false
+                    end
+                end
+            end
+            in_string = true
+        elseif char == '{' or char == '[' then
+            depth = depth + 1
+        elseif char == '}' or char == ']' then
+            depth = depth - 1
+        end
+        index = index + 1
+    end
+    return found
+end
+
+local context_raw = redis.call('GET', KEYS[1])
+if not context_raw then
+    return 4
+end
+local decoded, context = pcall(cjson.decode, context_raw)
+if not decoded or type(context) ~= 'table' then
+    return 4
+end
+if type(context['rca_text']) ~= 'string'
+    or type(context['alert_data']) ~= 'table'
+    or not top_level_value_is_array(context_raw, 'alert_data')
+    or type(context['turns']) ~= 'number'
+    or context['turns'] < 0
+    or context['turns'] ~= math.floor(context['turns']) then
+    return 4
+end
+local context_ttl_ms = redis.call('PTTL', KEYS[1])
+if context_ttl_ms == 0 or context_ttl_ms == -2 then
+    return 4
+end
+if redis.call('EXISTS', KEYS[2]) == 1 then
+    return 1
+end
+local user_turns = tonumber(redis.call('GET', KEYS[3]) or '0')
+local incident_turns = context['turns']
+if user_turns >= tonumber(ARGV[2]) then
+    return 2
+end
+if incident_turns >= tonumber(ARGV[3]) then
+    return 3
+end
+if context_ttl_ms < 0 then
+    context_ttl_ms = tonumber(ARGV[4]) * 1000
+end
+redis.call('SET', KEYS[2], '1', 'EX', ARGV[1])
+redis.call('INCR', KEYS[3])
+redis.call('PEXPIRE', KEYS[3], context_ttl_ms)
+context['turns'] = incident_turns + 1
+redis.call('SET', KEYS[1], cjson.encode(context), 'PX', context_ttl_ms)
+return 0
+"""
+
+_UPDATE_FOLLOWUP_CONTEXT_SCRIPT = """
+local context_raw = redis.call('GET', KEYS[1])
+if not context_raw then
+    return 0
+end
+local decoded, context = pcall(cjson.decode, context_raw)
+if not decoded or type(context) ~= 'table' then
+    return 0
+end
+local context_ttl_ms = redis.call('PTTL', KEYS[1])
+if context_ttl_ms == 0 or context_ttl_ms == -2 then
+    return 0
+end
+context[ARGV[1]] = ARGV[2]
+if context_ttl_ms < 0 then
+    redis.call('SET', KEYS[1], cjson.encode(context))
+else
+    redis.call('SET', KEYS[1], cjson.encode(context), 'PX', context_ttl_ms)
+end
+return 1
+"""
 
 
 def _decode_redis_value(value: str | bytes) -> str:
@@ -27,6 +143,55 @@ def _load_json_dict(value: str | bytes, context: str) -> dict | None:
         logger.warning("Invalid Redis payload for %s: expected object, got %s", context, type(data))
         return None
     return data
+
+
+def is_usable_followup_context(context: dict | None) -> bool:
+    """Return whether a decoded follow-up context is safe for quota admission."""
+    if not isinstance(context, dict):
+        return False
+    turns = context.get("turns")
+    return (
+        isinstance(context.get("rca_text"), str)
+        and isinstance(context.get("alert_data"), list)
+        and isinstance(turns, int)
+        and not isinstance(turns, bool)
+        and turns >= 0
+    )
+
+
+class FollowupAdmission(StrEnum):
+    """Result of an atomic follow-up quota admission."""
+
+    ACCEPTED = "accepted"
+    COOLDOWN = "cooldown"
+    USER_LIMIT = "user_limit"
+    INCIDENT_LIMIT = "incident_limit"
+    NO_CONTEXT = "no_context"
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationIdentity:
+    """Platform, chat, and user scope used for conversation quotas."""
+
+    chat_id: str
+    user_id: str
+
+    def __post_init__(self) -> None:
+        if ":" not in self.chat_id:
+            raise ValueError("chat_id must include a platform namespace")
+        if not self.user_id:
+            raise ValueError("user_id must not be empty")
+
+    @property
+    def key(self) -> str:
+        """Return the stable Redis key fragment."""
+        return f"{self.chat_id}:{self.user_id}"
+
+
+def conversation_identity(chat_id: str | None, user_id: int | str) -> ConversationIdentity:
+    """Build a namespaced conversation identity with a safe fallback for direct API use."""
+    normalized_chat_id = chat_id if chat_id and ":" in chat_id else "unknown:global"
+    return ConversationIdentity(chat_id=normalized_chat_id, user_id=str(user_id))
 
 
 class AlertStore:
@@ -225,15 +390,15 @@ class AlertStore:
         Update the incident_id inside the followup context for a fingerprint.
         """
         key = f"alert:followup:{fingerprint}"
-        value = await self._redis.get(key)
-        if not value:
+        updated = await self._redis.eval(
+            _UPDATE_FOLLOWUP_CONTEXT_SCRIPT,
+            1,
+            key,
+            "incident_id",
+            incident_id,
+        )
+        if not updated:
             return
-        data = _load_json_dict(value, key)
-        if data is None:
-            return
-        data["incident_id"] = incident_id
-        ttl = await self._redis.ttl(key)
-        await self._redis.set(key, json.dumps(data), ex=max(ttl, 1))
         logger.debug(
             "Updated followup context for %s with incident_id %s",
             fingerprint,
@@ -246,57 +411,76 @@ class AlertStore:
         Useful when an alert was triggered on-demand and we need to save the first analysis result.
         """
         key = f"alert:followup:{fingerprint}"
-        value = await self._redis.get(key)
-        if not value:
+        updated = await self._redis.eval(
+            _UPDATE_FOLLOWUP_CONTEXT_SCRIPT,
+            1,
+            key,
+            "rca_text",
+            rca_text,
+        )
+        if not updated:
             return
-        data = _load_json_dict(value, key)
-        if data is None:
-            return
-        data["rca_text"] = rca_text
-        ttl = await self._redis.ttl(key)
-        await self._redis.set(key, json.dumps(data), ex=max(ttl, 1))
         logger.debug("Updated followup context for %s with new rca_text", fingerprint)
 
-    async def increment_followup_turns(self, fingerprint: str) -> int:
-        """
-        Atomically increment the follow-up turn counter for an alert group.
+    async def check_and_set_scoped_cooldown(self, identity: ConversationIdentity) -> bool:
+        """Atomically check and set cooldown for a platform/chat/user identity."""
+        settings = get_settings()
+        key = f"followup:cooldown:{identity.key}"
+        was_set = await self._redis.set(
+            key,
+            "1",
+            ex=settings.followup_user_cooldown_sec,
+            nx=True,
+        )
+        return not was_set
+
+    async def admit_followup(
+        self,
+        fingerprint: str,
+        identity: ConversationIdentity,
+    ) -> FollowupAdmission:
+        """Atomically reserve one per-user and total incident follow-up turn.
 
         Args:
-            fingerprint: Alert group fingerprint.
+            fingerprint: Alert group fingerprint with active follow-up context.
+            identity: Platform/chat/user scope for cooldown and per-user turns.
 
         Returns:
-            New turn count after increment. Returns 0 if context no longer exists.
-        """
-        key = f"alert:followup:{fingerprint}"
-        value = await self._redis.get(key)
-        if value is None:
-            return 0
-        data = _load_json_dict(value, key)
-        if data is None:
-            return 0
-        data["turns"] = data.get("turns", 0) + 1
-        ttl = await self._redis.ttl(key)
-        await self._redis.set(key, json.dumps(data), ex=max(ttl, 1))
-        return data["turns"]
-
-    async def check_and_set_user_cooldown(self, user_id: int | str) -> bool:
-        """
-        Check if a user is in cooldown; set the cooldown key if not.
-
-        Uses Redis SET NX to atomically check-and-set in one operation.
-
-        Args:
-            user_id: Platform user identifier.
-
-        Returns:
-            True if the user IS in cooldown (request should be throttled),
-            False if the cooldown was just set (request is allowed).
+            Structured admission result.
         """
         settings = get_settings()
-        key = f"followup:cooldown:{user_id}"
-        # SET NX returns True if key was set (not in cooldown), False if already existed
-        was_set = await self._redis.set(key, "1", ex=settings.followup_user_cooldown_sec, nx=True)
-        return not was_set  # True means "in cooldown"
+        keys = (
+            f"alert:followup:{fingerprint}",
+            f"followup:cooldown:{identity.key}",
+            f"followup:turns:user:{fingerprint}:{identity.key}",
+        )
+        result = await self._redis.eval(
+            _ADMIT_FOLLOWUP_SCRIPT,
+            len(keys),
+            *keys,
+            settings.followup_user_cooldown_sec,
+            settings.effective_followup_user_max_turns,
+            settings.followup_incident_max_turns,
+            settings.followup_ttl,
+        )
+        mapping = {
+            0: FollowupAdmission.ACCEPTED,
+            1: FollowupAdmission.COOLDOWN,
+            2: FollowupAdmission.USER_LIMIT,
+            3: FollowupAdmission.INCIDENT_LIMIT,
+            4: FollowupAdmission.NO_CONTEXT,
+        }
+        admission = mapping.get(int(result))
+        if admission is None:
+            raise RuntimeError(f"Unexpected Redis follow-up admission result: {result}")
+        logger.info(
+            "Follow-up admission result=%s chat=%s user=%s fingerprint=%s",
+            admission,
+            identity.chat_id,
+            identity.user_id,
+            fingerprint,
+        )
+        return admission
 
     async def is_muted(self, chat_id: str, alertname: str) -> bool:
         """

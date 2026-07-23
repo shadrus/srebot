@@ -5,6 +5,8 @@ import logging
 
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp
+from slack_sdk.http_retry.builtin_async_handlers import AsyncRateLimitErrorRetryHandler
+from slack_sdk.web.async_client import AsyncWebClient
 
 from srebot.bot.base import BotIntegration
 from srebot.bot.slack.handlers import register_handlers
@@ -12,6 +14,14 @@ from srebot.config import Settings
 from srebot.llm.agent import get_agent
 
 logger = logging.getLogger(__name__)
+
+
+def _build_slack_client(token: str) -> AsyncWebClient:
+    """Build a Slack client that retries only explicit bounded rate limits."""
+    return AsyncWebClient(
+        token=token,
+        retry_handlers=[AsyncRateLimitErrorRetryHandler(max_retry_count=2)],
+    )
 
 
 class SlackBotIntegration(BotIntegration):
@@ -56,7 +66,8 @@ class SlackBotIntegration(BotIntegration):
     async def _run(self) -> None:
         """Internal async runner for the Slack bot."""
         logger.info("Initializing Slack bot integration")
-        self._app = AsyncApp(token=self._settings.slack_bot_token)
+        client = _build_slack_client(self._settings.slack_bot_token)
+        self._app = AsyncApp(client=client)
         register_handlers(self._app, self._settings)
 
         # Fetch latest parsing strategies upon startup

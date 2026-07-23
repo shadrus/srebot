@@ -7,7 +7,18 @@ from discord.ext import commands
 
 import srebot.config as config
 import srebot.state.store as state_store
-from srebot.bot.shared import ChatAdapter, process_alert_text
+from srebot.bot.delivery import (
+    DeliveryReceipt,
+    MessageConstraints,
+    delivery_coordinator,
+    paginate_markdown,
+)
+from srebot.bot.shared import (
+    ChatAdapter,
+    process_alert_text,
+    register_followup_receipt,
+    rejection_turn_limit,
+)
 from srebot.config import Settings
 from srebot.messages import get_chat_message
 from srebot.parser.alert_parser import Alert
@@ -15,6 +26,7 @@ from srebot.parser.alert_parser import Alert
 logger = logging.getLogger(__name__)
 
 DISCORD_MESSAGE_LIMIT = 1900
+DISCORD_CONSTRAINTS = MessageConstraints(DISCORD_MESSAGE_LIMIT, "discord")
 
 
 def get_msg(key: str) -> str:
@@ -22,54 +34,30 @@ def get_msg(key: str) -> str:
     return get_chat_message(key, lang, "discord")
 
 
-def split_discord_message(text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
-    """Split text into Discord-sized chunks without discarding content."""
-    if limit <= 0:
-        raise ValueError("limit must be positive")
-    if not text:
-        return []
-
-    chunks: list[str] = []
-    remaining = text
-    while len(remaining) > limit:
-        split_at = remaining.rfind("\n", 0, limit + 1)
-        if split_at <= 0:
-            split_at = remaining.rfind(" ", 0, limit + 1)
-        if split_at <= 0:
-            split_at = limit
-
-        chunk = remaining[:split_at].rstrip()
-        if not chunk:
-            chunk = remaining[:limit]
-            split_at = limit
-        chunks.append(chunk)
-        remaining = remaining[split_at:].lstrip()
-
-    if remaining:
-        chunks.append(remaining)
-    return chunks
-
-
-async def _send_reply_chunks(
+async def _deliver_reply(
     message: discord.Message,
     text: str,
     first_message: discord.Message | None = None,
-) -> list[discord.Message]:
-    """Send all Discord chunks, optionally replacing an existing placeholder first."""
-    chunks = split_discord_message(text)
-    if not chunks:
-        return []
+) -> DeliveryReceipt:
+    """Deliver one ordered Discord response and optionally replace a placeholder."""
+    chunks = paginate_markdown(text, DISCORD_CONSTRAINTS)
 
-    sent: list[discord.Message] = []
-    if first_message is not None:
-        await first_message.edit(content=chunks[0])
-        sent.append(first_message)
-    else:
-        sent.append(await message.reply(chunks[0]))
+    async def send_chunk(rendered: str, _primary_id: str | None) -> str:
+        sent = await message.reply(rendered)
+        return str(sent.id)
 
-    for chunk in chunks[1:]:
-        sent.append(await message.reply(chunk))
-    return sent
+    async def edit_first(rendered: str) -> str:
+        if first_message is None:
+            raise RuntimeError("no Discord placeholder is available")
+        await first_message.edit(content=rendered)
+        return str(first_message.id)
+
+    return await delivery_coordinator.deliver(
+        f"discord:{message.channel.id}",
+        chunks,
+        send_chunk,
+        edit_first if first_message is not None else None,
+    )
 
 
 async def _reply_targets_bot(message: discord.Message, bot: commands.Bot) -> bool:
@@ -100,7 +88,6 @@ class DiscordChatAdapter(ChatAdapter):
     def __init__(self, message: discord.Message, dry_run: bool):
         self.message = message
         self.dry_run = dry_run
-        self.additional_message_ids: list[str] = []
 
     def get_chat_id(self) -> str:
         return f"discord:{self.message.channel.id}"
@@ -108,7 +95,11 @@ class DiscordChatAdapter(ChatAdapter):
     async def send_resolved(
         self, label: str, primary: Alert, current_status: str, reply_to_id: str | None
     ) -> None:
-        text = get_msg("resolved_alert").format(
+        text = get_chat_message(
+            "resolved_alert",
+            config.get_settings().llm_response_language,
+            "markdown",
+        ).format(
             alertname=primary.alertname,
             cluster=primary.cluster,
             job=primary.labels.get("job", "—"),
@@ -117,67 +108,72 @@ class DiscordChatAdapter(ChatAdapter):
             logger.info("[DRY-RUN] Would send Discord message:\n%s", text)
         else:
             try:
-                await self.message.reply(text)
+                await _deliver_reply(self.message, text)
             except Exception as exc:
                 logger.warning("Could not send resolved reply: %s", exc)
 
     async def send_short_notification(
         self, group_fp: str, label: str, primary: Alert
-    ) -> str | int | None:
-        msg_text = get_msg("new_alert").format(
+    ) -> DeliveryReceipt:
+        msg_text = get_chat_message(
+            "new_alert",
+            config.get_settings().llm_response_language,
+            "markdown",
+        ).format(
             alertname=primary.alertname,
             cluster=primary.cluster,
             job=primary.labels.get("job", "—"),
         )
+        chunks = paginate_markdown(msg_text, DISCORD_CONSTRAINTS)
         if self.dry_run:
             logger.info("[DRY-RUN] Short notification: %s", msg_text)
-            return None
+            return DeliveryReceipt.from_ids((), len(chunks))
 
         try:
-            placeholder = await self.message.reply(msg_text)
-            return str(placeholder.id)
+            return await _deliver_reply(self.message, msg_text)
         except Exception as exc:
             logger.error("Failed to send short notification: %s", exc)
-            return None
+            return DeliveryReceipt.from_ids((), len(chunks))
 
     async def send_analyzing_placeholder(
         self, group_fp: str, label: str, primary: Alert, alert_count: int
-    ) -> str | int | None:
+    ) -> DeliveryReceipt:
+        text = (
+            get_chat_message(
+                "analyzing_alerts",
+                config.get_settings().llm_response_language,
+                "markdown",
+            ).format(count=alert_count)
+            + "\n"
+            f"`{primary.alertname}` · {primary.cluster} · {primary.labels.get('job', '')}"
+        )
+        chunks = paginate_markdown(text, DISCORD_CONSTRAINTS)
         if self.dry_run:
             logger.info(
                 "[DRY-RUN] Analyzing group %s: %d alert(s) (no Discord placeholder sent)",
                 group_fp,
                 alert_count,
             )
-            return None
+            return DeliveryReceipt.from_ids((), len(chunks))
 
         try:
-            placeholder = await self.message.reply(
-                get_msg("analyzing_alerts").format(count=alert_count) + "\n"
-                f"`{primary.alertname}` · {primary.cluster} · {primary.labels.get('job', '')}"
-            )
-            return str(placeholder.id)
+            return await _deliver_reply(self.message, text)
         except Exception as exc:
             logger.error("Failed to send placeholder reply: %s", exc)
-            return None
+            return DeliveryReceipt.from_ids((), len(chunks))
 
     async def update_with_analysis(
         self, group_fp: str, placeholder_id: str | int | None, analysis: str, is_billing_error: bool
-    ) -> str | int | None:
+    ) -> DeliveryReceipt:
         if not is_billing_error:
             ttl_hours = config.get_settings().followup_ttl // 3600
             analysis += get_msg("ttl_footer").format(hours=ttl_hours)
 
         if placeholder_id is None:
             if not self.dry_run:
-                try:
-                    sent = await _send_reply_chunks(self.message, analysis)
-                    self.additional_message_ids = [str(msg.id) for msg in sent[1:]]
-                    return str(sent[0].id) if sent else None
-                except Exception as exc2:
-                    logger.error("Could not send analysis reply: %s", exc2)
-                    return None
-            return None
+                return await _deliver_reply(self.message, analysis)
+            chunks = paginate_markdown(analysis, DISCORD_CONSTRAINTS)
+            return DeliveryReceipt.from_ids((), len(chunks))
 
         # Try to fetch the original placeholder message by id in order to edit it
         try:
@@ -188,21 +184,10 @@ class DiscordChatAdapter(ChatAdapter):
             placeholder = None
 
         if placeholder:
-            try:
-                sent = await _send_reply_chunks(self.message, analysis, placeholder)
-                self.additional_message_ids = [str(msg.id) for msg in sent[1:]]
-                return str(sent[0].id) if sent else None
-            except Exception as exc:
-                logger.warning("Could not edit placeholder (%s), sending new message", exc)
+            return await _deliver_reply(self.message, analysis, placeholder)
 
         # Fallback to replying
-        try:
-            sent = await _send_reply_chunks(self.message, analysis)
-            self.additional_message_ids = [str(msg.id) for msg in sent[1:]]
-            return str(sent[0].id) if sent else None
-        except Exception as exc2:
-            logger.error("Total failure sending analysis reply: %s", exc2)
-            return None
+        return await _deliver_reply(self.message, analysis)
 
 
 async def _handle_alert_group(
@@ -219,13 +204,6 @@ async def _handle_alert_group(
     dry_run = config.get_settings().dry_run
     adapter = DiscordChatAdapter(message, dry_run)
     await execute_alert_group_workflow(group_fp, alerts, adapter, dry_run)
-
-    if adapter.additional_message_ids and not dry_run:
-        store = await state_store.get_store()
-        context = await store.get_followup_context(group_fp)
-        incident_id = context.get("incident_id") if context else None
-        for message_id in adapter.additional_message_ids:
-            await store.register_bot_message(message_id, group_fp, incident_id=incident_id)
 
 
 def clean_mentions(text: str, bot_id: int | None, bot_name: str | None) -> str:
@@ -268,7 +246,7 @@ def register_handlers(bot: commands.Bot, settings: Settings) -> None:
             bot.user.name.lower() in message.content.lower()
         )
         is_bot_authored = getattr(message.author, "bot", False) is True
-        cleaned_text = clean_mentions(message.content, bot.user.id, bot.user.name)
+        cleaned_text = clean_mentions(message.content, bot.user.id, bot.use й   ё         r.name)
 
         # Check for commands using raw content first (to support e.g. /mute@srebot)
         from srebot.bot.commands import extract_chat_id, handle_command, is_command_message
@@ -290,7 +268,7 @@ def register_handlers(bot: commands.Bot, settings: Settings) -> None:
                 if response:
                     if not settings.dry_run:
                         try:
-                            await _send_reply_chunks(message, response)
+                            await _deliver_reply(message, response)
                         except Exception as exc:
                             logger.warning("Could not send Discord command response: %s", exc)
                     else:
@@ -340,15 +318,14 @@ def register_handlers(bot: commands.Bot, settings: Settings) -> None:
                 # Successful follow-up
                 if not settings.dry_run:
                     try:
-                        sent = await _send_reply_chunks(message, answer, indicator)
+                        receipt = await _deliver_reply(message, answer, indicator)
 
-                        if sent and new_incident_id and fp_used:
-                            store = await state_store.get_store()
-                            for sent_message in sent:
-                                await store.register_bot_message(
-                                    str(sent_message.id), fp_used, incident_id=new_incident_id
-                                )
-                            await store.set_last_active_incident(chat_id, fp_used)
+                        await register_followup_receipt(
+                            receipt,
+                            fp_used,
+                            new_incident_id,
+                            chat_id,
+                        )
                     except Exception as exc:
                         logger.warning("Could not send Discord follow-up answer: %s", exc)
                 else:
@@ -359,15 +336,18 @@ def register_handlers(bot: commands.Bot, settings: Settings) -> None:
                 if rejection == RejectionReason.COOLDOWN:
                     user_msg = get_msg("cooldown")
                 else:
-                    max_turns = settings.followup_max_turns
+                    max_turns = rejection_turn_limit(settings, rejection)
                     user_msg = get_msg("limit_reached").format(current=max_turns, max=max_turns)
 
                 if not settings.dry_run:
                     try:
-                        if indicator:
-                            await indicator.edit(content=user_msg)
-                        else:
-                            await _send_reply_chunks(message, user_msg)
+                        receipt = await _deliver_reply(message, user_msg, indicator)
+                        await register_followup_receipt(
+                            receipt,
+                            fp_used,
+                            new_incident_id,
+                            chat_id,
+                        )
                     except Exception as exc:
                         logger.warning("Could not send Discord follow-up rejection: %s", exc)
                 else:

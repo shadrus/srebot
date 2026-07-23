@@ -3,7 +3,7 @@
 import logging
 
 from telegram.error import NetworkError, TelegramError
-from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
+from telegram.ext import AIORateLimiter, ApplicationBuilder, ContextTypes, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
 from srebot.bot.base import BotIntegration
@@ -56,6 +56,7 @@ class TelegramBotIntegration(BotIntegration):
             ApplicationBuilder()
             .token(self._settings.telegram_bot_token)
             .request(request)
+            .rate_limiter(AIORateLimiter(max_retries=2))
             .concurrent_updates(True)
             .post_init(self._post_init)
             .post_shutdown(self._post_shutdown)

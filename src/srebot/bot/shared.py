@@ -16,8 +16,14 @@ from collections.abc import Awaitable, Callable
 import srebot.config as config
 import srebot.llm.agent as llm_agent
 import srebot.state.store as state_store
+from srebot.bot.delivery import DeliveryReceipt
 from srebot.parser.alert_parser import Alert, AlertStatus, parse_alert_message
 from srebot.parser.filtering import get_ignore_registry
+from srebot.state.store import (
+    FollowupAdmission,
+    conversation_identity,
+    is_usable_followup_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +34,15 @@ class RejectionReason(enum.Enum):
     NO_CONTEXT = "no_context"  # No RCA context found — not a bot reply
     COOLDOWN = "cooldown"  # User is sending too fast
     LIMIT_REACHED = "limit_reached"  # Max turns exhausted for this incident
+    USER_LIMIT_REACHED = "user_limit_reached"
+    INCIDENT_LIMIT_REACHED = "incident_limit_reached"
+
+
+def rejection_turn_limit(settings: config.Settings, rejection: RejectionReason) -> int:
+    """Return the quota value to display for a structured rejection."""
+    if rejection == RejectionReason.INCIDENT_LIMIT_REACHED:
+        return settings.followup_incident_max_turns
+    return settings.effective_followup_user_max_turns
 
 
 class ChatAdapter(ABC):
@@ -41,15 +56,15 @@ class ChatAdapter(ABC):
     @abstractmethod
     async def send_short_notification(
         self, group_fp: str, label: str, primary: Alert
-    ) -> str | int | None:
-        """Called to post a short notification when auto-analyze is disabled."""
+    ) -> DeliveryReceipt:
+        """Post a short notification and return every delivered message ID."""
         pass
 
     @abstractmethod
     async def send_analyzing_placeholder(
         self, group_fp: str, label: str, primary: Alert, alert_count: int
-    ) -> str | int | None:
-        """Called to post an initial 'Analyzing...' placeholder."""
+    ) -> DeliveryReceipt:
+        """Post the analyzing placeholder and return every delivered message ID."""
         pass
 
     @abstractmethod
@@ -59,14 +74,55 @@ class ChatAdapter(ABC):
         placeholder_id: str | int | None,
         analysis: str,
         is_billing_error: bool,
-    ) -> str | int | None:
-        """Update the UI with the final analysis and return the displayed message ID."""
+    ) -> DeliveryReceipt:
+        """Update the UI and return every successfully displayed message ID."""
         pass
 
     @abstractmethod
     def get_chat_id(self) -> str:
         """Returns the chat ID associated with this adapter for state tracking."""
         pass
+
+
+async def register_followup_receipt(
+    receipt: DeliveryReceipt,
+    fingerprint: str | None,
+    incident_id: str | None,
+    chat_id: str,
+    *,
+    additional_message_ids: tuple[str | int, ...] = (),
+) -> None:
+    """Associate every delivered follow-up message with its conversation context.
+
+    Args:
+        receipt: Delivery result containing all successfully delivered message IDs.
+        fingerprint: Follow-up fingerprint returned by the shared workflow.
+        incident_id: Newly created incident ID, if the analysis produced one.
+        chat_id: Namespaced platform chat identifier.
+        additional_message_ids: Existing thread roots that should resolve to the same context.
+    """
+    if not receipt.message_ids or not fingerprint:
+        return
+
+    store = await state_store.get_store()
+    resolved_incident_id = incident_id
+    if resolved_incident_id is None and fingerprint != "general_query":
+        context = await store.get_followup_context(fingerprint)
+        if isinstance(context, dict):
+            parent_incident_id = context.get("incident_id")
+            if isinstance(parent_incident_id, str) and parent_incident_id:
+                resolved_incident_id = parent_incident_id
+
+    message_ids = dict.fromkeys(
+        (*receipt.message_ids, *(str(message_id) for message_id in additional_message_ids))
+    )
+    for message_id in message_ids:
+        await store.register_bot_message(
+            message_id,
+            fingerprint,
+            incident_id=resolved_incident_id,
+        )
+    await store.set_last_active_incident(chat_id, fingerprint)
 
 
 def group_key(alert: Alert) -> str:
@@ -142,20 +198,24 @@ async def execute_alert_group_workflow(
     # Short Notification (Auto-analysis disabled)
     if not config.get_settings().auto_analyze_alerts:
         logger.info("Auto-analysis disabled, posting short notification for %s", group_fp)
-        msg_id = await adapter.send_short_notification(group_fp, label, primary)
-        if not dry_run and msg_id is not None:
-            await store.mark_firing(group_fp, str(msg_id))
+        receipt = await adapter.send_short_notification(group_fp, label, primary)
+        if not dry_run and receipt.primary_message_id is not None:
+            await store.mark_firing(group_fp, receipt.primary_message_id)
             await store.save_followup_context(group_fp, "", alert_data, incident_id=None)
-            await store.register_bot_message(str(msg_id), group_fp, incident_id=None)
+            for message_id in receipt.message_ids:
+                await store.register_bot_message(message_id, group_fp, incident_id=None)
             await store.set_last_active_incident(chat_id, group_fp)
         elif dry_run:
             await store.mark_firing(group_fp, "0")
         return
 
     # Send analyzing placeholder
-    placeholder_id = await adapter.send_analyzing_placeholder(group_fp, label, primary, len(alerts))
+    placeholder_receipt = await adapter.send_analyzing_placeholder(
+        group_fp, label, primary, len(alerts)
+    )
+    placeholder_id = placeholder_receipt.primary_message_id
     if not dry_run and placeholder_id is not None:
-        await store.mark_analyzing(group_fp, str(placeholder_id))
+        await store.mark_analyzing(group_fp, placeholder_id)
     elif dry_run:
         await store.mark_analyzing(group_fp, "0")
 
@@ -180,18 +240,22 @@ async def execute_alert_group_workflow(
         return
 
     # Update UI with final analysis
-    final_msg_id = await adapter.update_with_analysis(
+    receipt = await adapter.update_with_analysis(
         group_fp, placeholder_id, analysis, is_billing_error
     )
 
-    if final_msg_id is not None:
+    if receipt.primary_message_id is not None:
         if current_status == "analyzing":
             await store.save_followup_context(
                 group_fp, analysis, alert_data, incident_id=incident_id
             )
-            await store.register_bot_message(str(final_msg_id), group_fp, incident_id=incident_id)
+            delivered_message_ids = dict.fromkeys(
+                (*placeholder_receipt.message_ids, *receipt.message_ids)
+            )
+            for message_id in delivered_message_ids:
+                await store.register_bot_message(message_id, group_fp, incident_id=incident_id)
             await store.set_last_active_incident(chat_id, group_fp)
-            await store.mark_firing(group_fp, str(final_msg_id))
+            await store.mark_firing(group_fp, receipt.primary_message_id)
         elif current_status == "resolved":
             logger.info(
                 "Alert %s was resolved during analysis. "
@@ -310,11 +374,6 @@ async def handle_followup_question(
     store = await state_store.get_store()
     settings = config.get_settings()
 
-    in_cooldown = await store.check_and_set_user_cooldown(user_id)
-    if in_cooldown:
-        logger.debug("Follow-up: user %s is in cooldown", user_id)
-        return "", None, None, RejectionReason.COOLDOWN
-
     fp = None
     parent_incident_id = None
     rca_text = ""
@@ -325,31 +384,40 @@ async def handle_followup_question(
         if msg_ctx:
             fp = msg_ctx["fingerprint"]
             parent_incident_id = msg_ctx["incident_id"]
-            if fp and fp != "general_query":
-                ctx = await store.get_followup_context(fp)
-                if not ctx:
-                    fp = "general_query"
+        else:
+            logger.debug("Follow-up: reply %s has no bot context", reply_to_id)
+            return "", None, None, RejectionReason.NO_CONTEXT
 
     if fp and fp != "general_query":
-        # Check turns and context expiration for actual alert groups
-        turns = await store.increment_followup_turns(fp)
-        if turns > settings.followup_max_turns:
-            logger.info(
-                "Follow-up: max turns (%d) exceeded for group %s (turn %d)",
-                settings.followup_max_turns,
-                fp,
-                turns,
-            )
-            return "", None, fp, RejectionReason.LIMIT_REACHED
-
         ctx = await store.get_followup_context(fp)
-        if not ctx:
-            logger.debug("Follow-up: context expired for group %s", fp)
+        if not is_usable_followup_context(ctx):
+            logger.debug("Follow-up: context missing or invalid for group %s", fp)
             return "", None, fp, RejectionReason.NO_CONTEXT
+        identity = conversation_identity(chat_id, user_id)
+        admission = await store.admit_followup(fp, identity)
+        admission_rejections = {
+            FollowupAdmission.COOLDOWN: RejectionReason.COOLDOWN,
+            FollowupAdmission.USER_LIMIT: RejectionReason.USER_LIMIT_REACHED,
+            FollowupAdmission.INCIDENT_LIMIT: RejectionReason.INCIDENT_LIMIT_REACHED,
+            FollowupAdmission.NO_CONTEXT: RejectionReason.NO_CONTEXT,
+        }
+        if admission != FollowupAdmission.ACCEPTED:
+            rejection = admission_rejections[admission]
+            logger.info(
+                "Follow-up rejected reason=%s user=%s group=%s",
+                rejection.value,
+                identity.key,
+                fp,
+            )
+            return "", None, fp, rejection
         rca_text = ctx["rca_text"]
         alert_data = ctx["alert_data"]
     else:
         # General query session: no active incident context
+        identity = conversation_identity(chat_id, user_id)
+        if await store.check_and_set_scoped_cooldown(identity):
+            logger.info("General query rejected reason=cooldown user=%s", identity.key)
+            return "", None, None, RejectionReason.COOLDOWN
         fp = "general_query"
         rca_text = ""
         alert_data = []

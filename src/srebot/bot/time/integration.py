@@ -13,6 +13,24 @@ from srebot.llm.agent import get_agent
 
 logger = logging.getLogger(__name__)
 
+TIME_MESSAGE_FALLBACK = 15_500
+TIME_MESSAGE_RESERVE = 128
+
+
+async def discover_time_message_limit(client: TimeClient) -> int:
+    """Read Time's runtime post limit or return the conservative fallback."""
+    try:
+        client_config = await client.raw_request("GET", "/api/v4/config/client")
+        raw_max_post_size = (
+            client_config.get("MaxPostSize") if isinstance(client_config, Mapping) else None
+        )
+        max_post_size = int(raw_max_post_size) if raw_max_post_size is not None else 0
+        if max_post_size > TIME_MESSAGE_RESERVE:
+            return max_post_size - TIME_MESSAGE_RESERVE
+    except Exception as exc:
+        logger.warning("Could not discover Time MaxPostSize, using fallback: %s", exc)
+    return TIME_MESSAGE_FALLBACK
+
 
 class TimeBotIntegration(BotIntegration):
     """Run SREBot over Time Messenger's REST API and authenticated WebSocket."""
@@ -61,6 +79,8 @@ class TimeBotIntegration(BotIntegration):
                     user_id=str(profile["id"]),
                     username=str(profile.get("username") or ""),
                 )
+                message_limit = await discover_time_message_limit(client)
+                client.message_limit = message_limit
                 register_handlers(router, self._settings, client, identity)
 
                 logger.info(
@@ -68,6 +88,7 @@ class TimeBotIntegration(BotIntegration):
                     self._settings.time_channel_id,
                     identity.username or identity.user_id,
                 )
+                logger.info("Time message delivery limit set to %d characters", message_limit)
                 await application.run()
         finally:
             await self._shutdown_resources()

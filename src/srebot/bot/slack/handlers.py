@@ -8,12 +8,30 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 import srebot.config as config
 import srebot.state.store as state_store
-from srebot.bot.shared import ChatAdapter, process_alert_text
+from srebot.bot.delivery import (
+    DeliveryReceipt,
+    MessageConstraints,
+    canonicalize_fence_indentation,
+    delivery_coordinator,
+    paginate_markdown,
+)
+from srebot.bot.shared import (
+    ChatAdapter,
+    process_alert_text,
+    register_followup_receipt,
+    rejection_turn_limit,
+)
 from srebot.config import Settings
 from srebot.messages import get_chat_message
 from srebot.parser.alert_parser import Alert
 
 logger = logging.getLogger(__name__)
+
+SLACK_MESSAGE_LIMIT = 3800
+SLACK_CONSTRAINTS = MessageConstraints(SLACK_MESSAGE_LIMIT, "slack")
+_SLACK_FENCE_OPEN_RE = re.compile(r"^(?P<marker>`{3,}|~{3,})[^\r\n]*$")
+_SLACK_INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
+_SLACK_INVISIBLE_SEPARATOR = "\u2060"
 
 
 def get_msg(key: str) -> str:
@@ -25,6 +43,58 @@ def _markdown_to_slack(text: str) -> str:
     """
     Convert standard Markdown to Slack mrkdwn format.
     """
+    text = canonicalize_fence_indentation(text)
+    code_segments: list[str] = []
+
+    def protect_code(code: str) -> str:
+        code_segments.append(code)
+        return f"\x00CODE{len(code_segments) - 1}\x00"
+
+    def neutralize_backtick_runs(value: str) -> str:
+        def split_run(match: re.Match) -> str:
+            run = match.group(0)
+            return _SLACK_INVISIBLE_SEPARATOR.join(
+                run[index : index + 2] for index in range(0, len(run), 2)
+            )
+
+        return re.sub(r"`{3,}", split_run, value)
+
+    lines = text.splitlines(keepends=True)
+    protected: list[str] = []
+    index = 0
+    while index < len(lines):
+        opening_line = lines[index].rstrip("\r\n")
+        opening_match = _SLACK_FENCE_OPEN_RE.fullmatch(opening_line)
+        if opening_match is None:
+            protected.append(lines[index])
+            index += 1
+            continue
+
+        marker = opening_match.group("marker")
+        closing_index = index + 1
+        while closing_index < len(lines):
+            closing_line = lines[closing_index].rstrip("\r\n")
+            if re.fullmatch(
+                rf"{re.escape(marker[0])}{{{len(marker)},}}[ \t]*",
+                closing_line,
+            ):
+                break
+            closing_index += 1
+        if closing_index == len(lines):
+            protected.append(lines[index])
+            index += 1
+            continue
+
+        body = "".join(lines[index + 1 : closing_index])
+        if body and not body.endswith(("\n", "\r")):
+            body = f"{body}\n"
+        safe_body = neutralize_backtick_runs(body)
+        safe_body = safe_body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        protected.append(protect_code(f"```\n{safe_body}```"))
+        index = closing_index + 1
+
+    text = "".join(protected)
+    text = _SLACK_INLINE_CODE_RE.sub(lambda match: protect_code(match.group(0)), text)
     # Convert italics before bold so the resulting Slack bold markers are not
     # interpreted as Markdown italics by the next substitution.
     text = re.sub(r"(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)", r"_\1_", text)
@@ -36,7 +106,46 @@ def _markdown_to_slack(text: str) -> str:
     # Links: [text](url) -> <url|text>
     text = re.sub(r"\[(.*?)\]\((.*?)\)", r"<\2|\1>", text)
 
+    for index, code in enumerate(code_segments):
+        text = text.replace(f"\x00CODE{index}\x00", code)
     return text
+
+
+async def _deliver_text(
+    channel_id: str,
+    client: AsyncWebClient,
+    text: str,
+    *,
+    thread_ts: str | None = None,
+    placeholder_ts: str | None = None,
+) -> DeliveryReceipt:
+    """Deliver one ordered Slack mrkdwn response."""
+    chunks = paginate_markdown(text, SLACK_CONSTRAINTS, _markdown_to_slack)
+
+    async def send_chunk(rendered: str, primary_id: str | None) -> str:
+        response = await client.chat_postMessage(
+            channel=channel_id,
+            text=rendered,
+            thread_ts=thread_ts or primary_id,
+        )
+        return str(response["ts"])
+
+    async def edit_first(rendered: str) -> str:
+        if placeholder_ts is None:
+            raise RuntimeError("no Slack placeholder is available")
+        await client.chat_update(
+            channel=channel_id,
+            ts=placeholder_ts,
+            text=rendered,
+        )
+        return placeholder_ts
+
+    return await delivery_coordinator.deliver(
+        f"slack:{channel_id}",
+        chunks,
+        send_chunk,
+        edit_first if placeholder_ts is not None else None,
+    )
 
 
 class SlackChatAdapter(ChatAdapter):
@@ -51,7 +160,11 @@ class SlackChatAdapter(ChatAdapter):
     async def send_resolved(
         self, label: str, primary: Alert, current_status: str, reply_to_id: str | None
     ) -> None:
-        text = get_msg("resolved_alert").format(
+        text = get_chat_message(
+            "resolved_alert",
+            config.get_settings().llm_response_language,
+            "markdown",
+        ).format(
             alertname=primary.alertname,
             cluster=primary.cluster,
             job=primary.labels.get("job", "—"),
@@ -60,89 +173,77 @@ class SlackChatAdapter(ChatAdapter):
             logger.info("[DRY-RUN] Would send Slack message:\n%s", text)
         else:
             try:
-                await self.client.chat_postMessage(
-                    channel=self.channel_id,
-                    text=text,
-                    thread_ts=reply_to_id if reply_to_id else None,
+                await _deliver_text(
+                    self.channel_id,
+                    self.client,
+                    text,
+                    thread_ts=reply_to_id,
                 )
             except Exception as exc:
                 logger.warning("Could not send resolved reply: %s", exc)
 
     async def send_short_notification(
         self, group_fp: str, label: str, primary: Alert
-    ) -> str | int | None:
-        msg_text = get_msg("new_alert").format(
+    ) -> DeliveryReceipt:
+        msg_text = get_chat_message(
+            "new_alert",
+            config.get_settings().llm_response_language,
+            "markdown",
+        ).format(
             alertname=primary.alertname,
             cluster=primary.cluster,
             job=primary.labels.get("job", "—"),
         )
+        chunks = paginate_markdown(msg_text, SLACK_CONSTRAINTS, _markdown_to_slack)
         if self.dry_run:
             logger.info("[DRY-RUN] Short notification: %s", msg_text)
-            return None
+            return DeliveryReceipt.from_ids((), len(chunks))
 
         try:
-            res = await self.client.chat_postMessage(channel=self.channel_id, text=msg_text)
-            return res["ts"]
+            return await _deliver_text(self.channel_id, self.client, msg_text)
         except Exception as exc:
             logger.error("Failed to send short notification: %s", exc)
-            return None
+            return DeliveryReceipt.from_ids((), len(chunks))
 
     async def send_analyzing_placeholder(
         self, group_fp: str, label: str, primary: Alert, alert_count: int
-    ) -> str | int | None:
+    ) -> DeliveryReceipt:
+        text = (
+            get_chat_message(
+                "analyzing_alerts",
+                config.get_settings().llm_response_language,
+                "markdown",
+            ).format(count=alert_count)
+            + f"\n`{primary.alertname}` · {primary.cluster} · "
+            f"{primary.labels.get('job', '')}"
+        )
+        chunks = paginate_markdown(text, SLACK_CONSTRAINTS, _markdown_to_slack)
         if self.dry_run:
             logger.info("[DRY-RUN] Analyzing group %s: %d alert(s)", group_fp, alert_count)
-            return None
+            return DeliveryReceipt.from_ids((), len(chunks))
 
         try:
-            res = await self.client.chat_postMessage(
-                channel=self.channel_id,
-                text=(
-                    get_msg("analyzing_alerts").format(count=alert_count)
-                    + f"\n`{primary.alertname}` · {primary.cluster} · "
-                    f"{primary.labels.get('job', '')}"
-                ),
-            )
-            return res["ts"]
+            return await _deliver_text(self.channel_id, self.client, text)
         except Exception as exc:
             logger.error("Failed to send placeholder reply: %s", exc)
-            return None
+            return DeliveryReceipt.from_ids((), len(chunks))
 
     async def update_with_analysis(
         self, group_fp: str, placeholder_id: str | int | None, analysis: str, is_billing_error: bool
-    ) -> str | int | None:
-        # Convert Markdown to Slack mrkdwn
-        analysis = _markdown_to_slack(analysis)
-
+    ) -> DeliveryReceipt:
         if not is_billing_error:
             ttl_hours = config.get_settings().followup_ttl // 3600
             analysis += get_msg("ttl_footer").format(hours=ttl_hours)
 
-        if placeholder_id is None:
-            if not self.dry_run:
-                try:
-                    res = await self.client.chat_postMessage(channel=self.channel_id, text=analysis)
-                    return res["ts"]
-                except Exception as exc2:
-                    logger.error("Could not send analysis reply: %s", exc2)
-                    return None
-            return None
-
-        try:
-            await self.client.chat_update(
-                channel=self.channel_id,
-                ts=placeholder_id,  # type: ignore[arg-type]
-                text=analysis,
-            )
-            return placeholder_id
-        except Exception as exc:
-            logger.warning("Could not edit placeholder (%s), sending new message", exc)
-            try:
-                res = await self.client.chat_postMessage(channel=self.channel_id, text=analysis)
-                return res["ts"]
-            except Exception as exc2:
-                logger.error("Could not send analysis reply: %s", exc2)
-                return None
+        chunks = paginate_markdown(analysis, SLACK_CONSTRAINTS, _markdown_to_slack)
+        if self.dry_run:
+            return DeliveryReceipt.from_ids((), len(chunks))
+        return await _deliver_text(
+            self.channel_id,
+            self.client,
+            analysis,
+            placeholder_ts=str(placeholder_id) if placeholder_id is not None else None,
+        )
 
 
 async def _handle_alert_group(
@@ -284,9 +385,10 @@ def register_handlers(app: AsyncApp, settings: Settings) -> None:
                 if response:
                     if not settings.dry_run:
                         try:
-                            await client.chat_postMessage(
-                                channel=channel_id,
-                                text=_markdown_to_slack(response),
+                            await _deliver_text(
+                                channel_id,
+                                client,
+                                response,
                                 thread_ts=thread_ts,
                             )
                         except Exception as exc:
@@ -357,27 +459,21 @@ def register_handlers(app: AsyncApp, settings: Settings) -> None:
                 # Successful follow-up
                 if not settings.dry_run:
                     try:
-                        final_msg_ts = indicator_ts
-                        if indicator_ts:
-                            await client.chat_update(
-                                channel=channel_id,
-                                ts=indicator_ts,
-                                text=_markdown_to_slack(answer),
-                            )
-                        else:
-                            res = await client.chat_postMessage(
-                                channel=channel_id,
-                                text=_markdown_to_slack(answer),
-                                thread_ts=reply_to_ts,
-                            )
-                            final_msg_ts = res["ts"]
+                        receipt = await _deliver_text(
+                            channel_id,
+                            client,
+                            answer,
+                            thread_ts=reply_to_ts,
+                            placeholder_ts=indicator_ts,
+                        )
 
-                        if final_msg_ts and new_incident_id and fp_used:
-                            store = await state_store.get_store()
-                            await store.register_bot_message(
-                                str(final_msg_ts), fp_used, incident_id=new_incident_id
-                            )
-                            await store.set_last_active_incident(chat_id, fp_used)
+                        await register_followup_receipt(
+                            receipt,
+                            fp_used,
+                            new_incident_id,
+                            chat_id,
+                            additional_message_ids=(reply_to_ts,),
+                        )
                     except Exception as exc:
                         logger.warning("Could not send Slack follow-up answer: %s", exc)
                 else:
@@ -387,23 +483,25 @@ def register_handlers(app: AsyncApp, settings: Settings) -> None:
                 if rejection == RejectionReason.COOLDOWN:
                     user_msg = get_msg("cooldown")
                 else:
-                    max_turns = settings.followup_max_turns
+                    max_turns = rejection_turn_limit(settings, rejection)
                     user_msg = get_msg("limit_reached").format(current=max_turns, max=max_turns)
 
                 if not settings.dry_run:
                     try:
-                        if indicator_ts:
-                            await client.chat_update(
-                                channel=channel_id,
-                                ts=indicator_ts,
-                                text=user_msg,
-                            )
-                        else:
-                            await client.chat_postMessage(
-                                channel=channel_id,
-                                text=user_msg,
-                                thread_ts=reply_to_ts,
-                            )
+                        receipt = await _deliver_text(
+                            channel_id,
+                            client,
+                            user_msg,
+                            thread_ts=reply_to_ts,
+                            placeholder_ts=indicator_ts,
+                        )
+                        await register_followup_receipt(
+                            receipt,
+                            fp_used,
+                            new_incident_id,
+                            chat_id,
+                            additional_message_ids=(reply_to_ts,),
+                        )
                     except Exception as exc:
                         logger.warning("Could not send Slack follow-up rejection: %s", exc)
                 else:

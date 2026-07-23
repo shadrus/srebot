@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
+        env_ignore_empty=True,
         yaml_file="config.yml",
         yaml_file_encoding="utf-8",
         extra="ignore",
@@ -61,7 +62,9 @@ class Settings(BaseSettings):
     alert_fingerprint_ttl: int = 86400  # seconds
 
     # Follow-up thread settings
-    followup_max_turns: int = 5  # Max follow-up exchanges per alert group
+    followup_max_turns: int = 5  # Deprecated alias for per-user incident turns
+    followup_user_max_turns: int | None = None  # Max turns per user and incident
+    followup_incident_max_turns: int = 20  # Max turns across all users for one incident
     followup_ttl: int = 43200  # Seconds follow-up context window stays open (12 h)
     followup_user_cooldown_sec: int = 10  # Min seconds between follow-ups per user
     alert_analysis_timeout: int = 600  # seconds
@@ -112,6 +115,25 @@ class Settings(BaseSettings):
         if v not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise ValueError(f"Invalid log level: {v}")
         return v
+
+    @field_validator(
+        "followup_max_turns",
+        "followup_user_max_turns",
+        "followup_incident_max_turns",
+        "followup_ttl",
+        "followup_user_cooldown_sec",
+    )
+    @classmethod
+    def validate_positive_followup_setting(cls, v: int | None) -> int | None:
+        """Reject non-positive follow-up quota and lifetime settings."""
+        if v is not None and v <= 0:
+            raise ValueError("follow-up settings must be positive")
+        return v
+
+    @property
+    def effective_followup_user_max_turns(self) -> int:
+        """Return the new per-user limit or the legacy setting when unset."""
+        return self.followup_user_max_turns or self.followup_max_turns
 
 
 class MCPServerRegistry:

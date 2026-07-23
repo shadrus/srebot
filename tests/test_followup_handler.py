@@ -7,6 +7,7 @@ import pytest
 from srebot.bot.shared import RejectionReason, handle_followup_question
 from srebot.bot.telegram.handlers import _handle_alert_group, followup_reply_handler
 from srebot.parser.alert_parser import Alert, AlertStatus
+from srebot.state.store import FollowupAdmission
 
 # ---------------------------------------------------------------------------
 # Helpers / shared fixtures
@@ -39,8 +40,8 @@ def mock_store():
     store.save_followup_context = AsyncMock()
     store.register_bot_message = AsyncMock()
     store.get_fp_by_message_id = AsyncMock(return_value=None)
-    store.check_and_set_user_cooldown = AsyncMock(return_value=False)
-    store.increment_followup_turns = AsyncMock(return_value=1)
+    store.check_and_set_scoped_cooldown = AsyncMock(return_value=False)
+    store.admit_followup = AsyncMock(return_value=FollowupAdmission.ACCEPTED)
     store.get_followup_context = AsyncMock(return_value=None)
     return store
 
@@ -228,6 +229,7 @@ class TestFollowupReplyHandler:
         msg.reply_to_message = replied
 
         indicator = AsyncMock()
+        indicator.message_id = 201
         indicator.edit_text = AsyncMock()
         msg.reply_text = AsyncMock(return_value=indicator)
 
@@ -259,7 +261,11 @@ class TestFollowupReplyHandler:
 
         async def followup_with_tool_failure(**kwargs):
             await kwargs["on_tool_failure"](["unavailable-tool"])
-            return "Partial answer", "incident456", "fp123", None
+            return "Partial answer", None, "fp123", None
+
+        mock_store.get_followup_context.return_value = {
+            "incident_id": "incident-parent",
+        }
 
         with (
             patch(
@@ -275,6 +281,11 @@ class TestFollowupReplyHandler:
         final_text = indicator.edit_text.await_args_list[1].args[0]
         assert "sources are unavailable" in progress_text
         assert "Partial answer" in final_text
+        mock_store.register_bot_message.assert_awaited_once_with(
+            str(indicator.message_id),
+            "fp123",
+            incident_id="incident-parent",
+        )
 
     async def test_ignored_when_no_context(self, mock_settings, mock_context):
         update = self._make_update()
@@ -402,7 +413,7 @@ class TestHandleFollowupQuestionDirect:
         assert fingerprint == "general_query"
         assert rejection is None
 
-    async def test_expired_context_on_reply_falls_back_to_general_query(
+    async def test_expired_context_on_reply_is_rejected_without_quota(
         self, mock_store, mock_agent, mock_settings
     ):
         mock_store.get_bot_message_context = AsyncMock(
@@ -422,16 +433,11 @@ class TestHandleFollowupQuestionDirect:
                 chat_id="-100",
             )
 
-        assert rejection is None
-        assert answer == "Follow-up answer"
-        mock_agent.followup.assert_called_once_with(
-            question="What's wrong?",
-            rca_text="",
-            alert_data=[],
-            allowed_servers=None,
-            parent_incident_id="incident123",
-            user_name=None,
-        )
+        assert rejection is RejectionReason.NO_CONTEXT
+        assert answer == ""
+        mock_store.admit_followup.assert_not_called()
+        mock_store.check_and_set_scoped_cooldown.assert_not_called()
+        mock_agent.followup.assert_not_called()
 
     async def test_expired_context_on_mention_falls_back_to_general_query(
         self, mock_store, mock_agent, mock_settings
@@ -473,8 +479,6 @@ class TestHandleFollowupQuestionDirect:
                 "incident_id": "incident123",
             }
         )
-        mock_store.increment_followup_turns = AsyncMock(return_value=1)
-
         with (
             patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
             patch("srebot.llm.agent.get_agent", return_value=mock_agent),

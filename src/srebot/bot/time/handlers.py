@@ -2,27 +2,39 @@
 
 import logging
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
+from urllib.parse import quote
 
 from aiotimebot import EventType, HandlerContext, PostedEvent, Propagation, Router, TimeClient
-from aiotimebot.api.api.posts import delete_post, patch_post
+from aiotimebot.api.api.posts import delete_post
 from aiotimebot.api.models.app_error import AppError
-from aiotimebot.api.models.patch_post_body import PatchPostBody
+from aiotimebot.errors import APIError
 
 import srebot.config as config
 import srebot.state.store as state_store
+from srebot.bot.delivery import (
+    DeliveryReceipt,
+    MessageConstraints,
+    delivery_coordinator,
+    paginate_markdown,
+)
 from srebot.bot.shared import (
     ChatAdapter,
     RejectionReason,
     execute_alert_group_workflow,
     handle_followup_question,
     process_alert_text,
+    register_followup_receipt,
+    rejection_turn_limit,
 )
 from srebot.config import Settings
 from srebot.messages import get_chat_message
 from srebot.parser.alert_parser import Alert
 
 logger = logging.getLogger(__name__)
+
+TIME_MESSAGE_FALLBACK = 15_500
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,16 +66,28 @@ def _thread_root(event: PostedEvent) -> str:
 
 
 async def _edit_post(client: TimeClient, post_id: str, text: str) -> None:
-    """Edit a Time post and normalize generated API error responses."""
-    result = await patch_post.asyncio(
-        post_id=post_id,
-        client=client.api,
-        body=PatchPostBody(message=text),
+    """Edit a Time post through the client's header-aware bounded retry transport."""
+    http_client = client.api.get_async_httpx_client()
+    response = await http_client.put(
+        f"/api/v4/posts/{quote(post_id, safe='')}/patch",
+        json={"message": text},
     )
-    if isinstance(result, AppError):
-        raise RuntimeError(result.message)
-    if result is None:
-        raise RuntimeError("Time returned an empty response while editing a post")
+    if response.status_code == 200:
+        return
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+    message = (
+        str(payload.get("message") or response.reason_phrase)
+        if isinstance(payload, Mapping)
+        else response.reason_phrase
+    )
+    raise APIError(
+        message,
+        status_code=response.status_code,
+        request_id=response.headers.get("X-Request-Id"),
+    )
 
 
 async def _delete_post(client: TimeClient, post_id: str) -> None:
@@ -107,6 +131,47 @@ async def _send_channel_message(
     return post.id
 
 
+def _time_constraints(client: TimeClient) -> MessageConstraints:
+    """Return runtime Time message constraints discovered during startup."""
+    limit = getattr(client, "message_limit", TIME_MESSAGE_FALLBACK)
+    if not isinstance(limit, int) or limit <= 0:
+        limit = TIME_MESSAGE_FALLBACK
+    return MessageConstraints(limit, "time")
+
+
+async def _deliver_text(
+    client: TimeClient,
+    event: PostedEvent,
+    text: str,
+    *,
+    thread_root: str | None = None,
+    placeholder_id: str | None = None,
+) -> DeliveryReceipt:
+    """Deliver one ordered Time response using runtime server constraints."""
+    chunks = paginate_markdown(text, _time_constraints(client))
+
+    async def send_chunk(rendered: str, primary_id: str | None) -> str:
+        root_id = thread_root or primary_id
+        kwargs = {"channel_id": event.post.channel_id, "text": rendered}
+        if root_id is not None:
+            kwargs["root_id"] = root_id
+        post = await client.send_message(**kwargs)
+        return str(post.id)
+
+    async def edit_first(rendered: str) -> str:
+        if placeholder_id is None:
+            raise RuntimeError("no Time placeholder is available")
+        await _edit_post(client, placeholder_id, rendered)
+        return placeholder_id
+
+    return await delivery_coordinator.deliver(
+        f"time:{event.post.channel_id}",
+        chunks,
+        send_chunk,
+        edit_first if placeholder_id is not None else None,
+    )
+
+
 class TimeChatAdapter(ChatAdapter):
     """Map the platform-neutral alert workflow to Time posts and threads."""
 
@@ -123,57 +188,72 @@ class TimeChatAdapter(ChatAdapter):
         self, label: str, primary: Alert, current_status: str, reply_to_id: str | None
     ) -> None:
         """Post a resolved notification in the original analysis thread."""
-        text = get_msg("resolved_alert").format(
+        text = get_chat_message(
+            "resolved_alert",
+            config.get_settings().llm_response_language,
+            "markdown",
+        ).format(
             alertname=primary.alertname,
             cluster=primary.cluster,
             job=primary.labels.get("job", "—"),
         )
         try:
-            if reply_to_id and not self.dry_run:
-                await self.client.send_message(
-                    channel_id=self.event.post.channel_id,
-                    root_id=reply_to_id,
-                    text=text,
-                )
+            if self.dry_run:
+                logger.info("[DRY-RUN] Would send Time resolved message:\n%s", text)
             else:
-                await _send_channel_message(
-                    self.client, self.event.post.channel_id, text, self.dry_run
+                await _deliver_text(
+                    self.client,
+                    self.event,
+                    text,
+                    thread_root=reply_to_id,
                 )
         except Exception as exc:
             logger.warning("Could not send Time resolved reply: %s", exc)
 
     async def send_short_notification(
         self, group_fp: str, label: str, primary: Alert
-    ) -> str | int | None:
+    ) -> DeliveryReceipt:
         """Post the non-automatic-analysis notification."""
-        text = get_msg("new_alert").format(
+        text = get_chat_message(
+            "new_alert",
+            config.get_settings().llm_response_language,
+            "markdown",
+        ).format(
             alertname=primary.alertname,
             cluster=primary.cluster,
             job=primary.labels.get("job", "—"),
         )
+        chunks = paginate_markdown(text, _time_constraints(self.client))
+        if self.dry_run:
+            logger.info("[DRY-RUN] Would send Time short notification:\n%s", text)
+            return DeliveryReceipt.from_ids((), len(chunks))
         try:
-            return await _send_channel_message(
-                self.client, self.event.post.channel_id, text, self.dry_run
-            )
+            return await _deliver_text(self.client, self.event, text)
         except Exception as exc:
             logger.error("Failed to send Time short notification: %s", exc)
-            return None
+            return DeliveryReceipt.from_ids((), len(chunks))
 
     async def send_analyzing_placeholder(
         self, group_fp: str, label: str, primary: Alert, alert_count: int
-    ) -> str | int | None:
+    ) -> DeliveryReceipt:
         """Post an analysis placeholder in the incoming alert thread."""
         text = (
-            get_msg("analyzing_alerts").format(count=alert_count)
+            get_chat_message(
+                "analyzing_alerts",
+                config.get_settings().llm_response_language,
+                "markdown",
+            ).format(count=alert_count)
             + f"\n`{primary.alertname}` · {primary.cluster} · {primary.labels.get('job', '')}"
         )
+        chunks = paginate_markdown(text, _time_constraints(self.client))
+        if self.dry_run:
+            logger.info("[DRY-RUN] Would send Time placeholder:\n%s", text)
+            return DeliveryReceipt.from_ids((), len(chunks))
         try:
-            return await _send_channel_message(
-                self.client, self.event.post.channel_id, text, self.dry_run
-            )
+            return await _deliver_text(self.client, self.event, text)
         except Exception as exc:
             logger.error("Failed to send Time placeholder: %s", exc)
-            return None
+            return DeliveryReceipt.from_ids((), len(chunks))
 
     async def update_with_analysis(
         self,
@@ -181,26 +261,21 @@ class TimeChatAdapter(ChatAdapter):
         placeholder_id: str | int | None,
         analysis: str,
         is_billing_error: bool,
-    ) -> str | int | None:
+    ) -> DeliveryReceipt:
         """Replace the placeholder with the analysis, falling back to a new reply."""
         if not is_billing_error:
             ttl_hours = config.get_settings().followup_ttl // 3600
             analysis += get_msg("ttl_footer").format(hours=ttl_hours)
 
-        if placeholder_id is not None and not self.dry_run:
-            try:
-                await _edit_post(self.client, str(placeholder_id), analysis)
-                return placeholder_id
-            except Exception as exc:
-                logger.warning("Could not edit Time placeholder %s: %s", placeholder_id, exc)
-
-        try:
-            return await _send_channel_message(
-                self.client, self.event.post.channel_id, analysis, self.dry_run
-            )
-        except Exception as exc:
-            logger.error("Could not send Time analysis reply: %s", exc)
-            return None
+        chunks = paginate_markdown(analysis, _time_constraints(self.client))
+        if self.dry_run:
+            return DeliveryReceipt.from_ids((), len(chunks))
+        return await _deliver_text(
+            self.client,
+            self.event,
+            analysis,
+            placeholder_id=str(placeholder_id) if placeholder_id is not None else None,
+        )
 
 
 async def _handle_alert_group(
@@ -241,18 +316,19 @@ async def _finish_followup(
     indicator_id: str | None,
     text: str,
     dry_run: bool,
-) -> str | None:
+) -> DeliveryReceipt:
     """Edit the follow-up indicator or send a fresh thread reply."""
     if dry_run:
         logger.info("[DRY-RUN] Time follow-up response:\n%s", text)
-        return None
-    if indicator_id:
-        try:
-            await _edit_post(client, indicator_id, text)
-            return indicator_id
-        except Exception as exc:
-            logger.warning("Could not edit Time follow-up indicator %s: %s", indicator_id, exc)
-    return await _send_thread_message(client, event, text, dry_run=False)
+        chunks = paginate_markdown(text, _time_constraints(client))
+        return DeliveryReceipt.from_ids((), len(chunks))
+    return await _deliver_text(
+        client,
+        event,
+        text,
+        thread_root=_thread_root(event),
+        placeholder_id=indicator_id,
+    )
 
 
 async def handle_posted_event(
@@ -292,7 +368,15 @@ async def handle_posted_event(
             bot_username=identity.username,
         )
         if response:
-            await _send_thread_message(client, event, response, settings.dry_run)
+            if settings.dry_run:
+                logger.info("[DRY-RUN] Time command response:\n%s", response)
+            else:
+                await _deliver_text(
+                    client,
+                    event,
+                    response,
+                    thread_root=_thread_root(event),
+                )
             return Propagation.STOP
 
     if thread_has_context or is_mention:
@@ -337,27 +421,24 @@ async def handle_posted_event(
 
         if rejection == RejectionReason.COOLDOWN:
             answer = get_msg("cooldown")
-        elif rejection == RejectionReason.LIMIT_REACHED:
-            max_turns = settings.followup_max_turns
+        elif rejection is not None:
+            max_turns = rejection_turn_limit(settings, rejection)
             answer = get_msg("limit_reached").format(current=max_turns, max=max_turns)
 
-        final_post_id = await _finish_followup(
+        receipt = await _finish_followup(
             client,
             event,
             indicator_id,
             answer,
             settings.dry_run,
         )
-        if final_post_id and new_incident_id and fp_used:
-            await store.register_bot_message(final_post_id, fp_used, incident_id=new_incident_id)
-            thread_root_id = _thread_root(event)
-            if thread_root_id != final_post_id:
-                await store.register_bot_message(
-                    thread_root_id,
-                    fp_used,
-                    incident_id=new_incident_id,
-                )
-            await store.set_last_active_incident(f"time:{post.channel_id}", fp_used)
+        await register_followup_receipt(
+            receipt,
+            fp_used,
+            new_incident_id,
+            f"time:{post.channel_id}",
+            additional_message_ids=(_thread_root(event),),
+        )
         return Propagation.STOP
 
     if root_id:

@@ -1,9 +1,10 @@
 """Tests for Slack and Discord bot handlers, validating feature parity with Telegram."""
 
-from unittest.mock import ANY, AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
 
+from srebot.bot.delivery import MessageConstraints, paginate_markdown
 from srebot.bot.discord.handlers import (
     _handle_alert_group as discord_handle_alert_group,
 )
@@ -13,7 +14,6 @@ from srebot.bot.discord.handlers import (
 from srebot.bot.discord.handlers import (
     register_handlers as discord_register_handlers,
 )
-from srebot.bot.discord.handlers import split_discord_message
 from srebot.bot.shared import RejectionReason
 from srebot.bot.slack.handlers import (
     _handle_alert_group as slack_handle_alert_group,
@@ -105,6 +105,88 @@ class TestSlackHandlers:
     def test_slack_markdown_preserves_bold_and_italic(self):
         assert _markdown_to_slack("**bold** and *italic*") == "*bold* and _italic_"
 
+    def test_slack_markdown_preserves_fenced_and_inline_code_verbatim(self):
+        text = (
+            "**outside** and `**inline** [x](https://inline.test)`\n"
+            "```python\n"
+            'literal = "**value** [x](https://code.test)"\n'
+            "```"
+        )
+        assert _markdown_to_slack(text) == (
+            "*outside* and `**inline** [x](https://inline.test)`\n"
+            "```\n"
+            'literal = "**value** [x](https://code.test)"\n'
+            "```"
+        )
+
+    @pytest.mark.parametrize("marker", ["```", "~~~"])
+    @pytest.mark.parametrize("indent", ["", " ", "  ", "   "])
+    def test_slack_canonicalizes_indented_fences_without_changing_code(self, marker, indent):
+        result = _markdown_to_slack(
+            f"{indent}{marker}python\n**literal** [x](https://code.test)\n{indent}{marker}"
+        )
+
+        assert result == "```\n**literal** [x](https://code.test)\n```"
+
+    def test_slack_normalizes_every_paginated_tilde_fence(self):
+        body = "\n".join(f"value_{index}" for index in range(10))
+        chunks = paginate_markdown(
+            f"~~~python\n{body}\n~~~",
+            MessageConstraints(42, "slack"),
+            _markdown_to_slack,
+        )
+
+        assert len(chunks) > 1
+        assert all(chunk.rendered.startswith("```\n") for chunk in chunks)
+        assert all(chunk.rendered.endswith("\n```") for chunk in chunks)
+        reconstructed = "".join(
+            chunk.rendered.removeprefix("```\n").removesuffix("\n```") for chunk in chunks
+        )
+        assert reconstructed == body
+
+    def test_slack_structurally_converts_long_tilde_fence_with_embedded_markers(self):
+        body = "before\n~~~\n```\nafter"
+        result = _markdown_to_slack(f"~~~~python\n{body}\n~~~~")
+
+        assert result.startswith("```\n")
+        assert result.endswith("\n```")
+        assert result.count("```") == 2
+        assert result.removeprefix("```\n").removesuffix("\n```").replace("\u2060", "") == body
+
+    def test_slack_structurally_converts_every_complex_paginated_fence(self):
+        body = "\n".join(["~~~", "```", *(f"value_{index}" for index in range(10))])
+        chunks = paginate_markdown(
+            f"~~~~python\n{body}\n~~~~",
+            MessageConstraints(42, "slack"),
+            _markdown_to_slack,
+        )
+
+        assert len(chunks) > 1
+        assert all(chunk.rendered.startswith("```\n") for chunk in chunks)
+        assert all(chunk.rendered.endswith("\n```") for chunk in chunks)
+        assert all(len(chunk.rendered) <= 42 for chunk in chunks)
+        reconstructed = "".join(
+            chunk.rendered.removeprefix("```\n").removesuffix("\n```").replace("\u2060", "")
+            for chunk in chunks
+        )
+        assert reconstructed == body
+
+    def test_slack_oversized_inline_fallback_preserves_visible_backslashes(self):
+        text = r"**C:\Windows\System32LongName**"
+        chunks = paginate_markdown(
+            text,
+            MessageConstraints(24, "slack"),
+            _markdown_to_slack,
+        )
+
+        assert len(chunks) > 1
+        assert all(chunk.rendered.startswith("```\n") for chunk in chunks)
+        assert all(chunk.rendered.endswith("\n```") for chunk in chunks)
+        assert (
+            "".join(chunk.rendered.removeprefix("```\n").removesuffix("\n```") for chunk in chunks)
+            == r"C:\Windows\System32LongName"
+        )
+
     async def test_slack_handle_alert_group_firing(self, mock_store, mock_agent, mock_settings):
         alert = _firing_alert()
         client = AsyncMock()
@@ -175,8 +257,11 @@ class TestSlackHandlers:
             ts="1111",
             text="Everything is fine",
         )
-        mock_store.register_bot_message.assert_called_once_with(
-            "1111", "general_query", incident_id="incident-999"
+        mock_store.register_bot_message.assert_has_awaits(
+            [
+                call("1111", "general_query", incident_id="incident-999"),
+                call("2222", "general_query", incident_id="incident-999"),
+            ]
         )
 
     async def test_slack_mcp_failure_updates_indicator(self, mock_store, mock_settings):
@@ -208,6 +293,12 @@ class TestSlackHandlers:
 
         assert "sources are unavailable" in client.chat_update.await_args_list[0].kwargs["text"]
         assert client.chat_update.await_args_list[1].kwargs["text"] == "Partial answer"
+        mock_store.register_bot_message.assert_has_awaits(
+            [
+                call("1111", "general_query", incident_id=None),
+                call("123", "general_query", incident_id=None),
+            ]
+        )
 
     async def test_slack_app_mention_reaches_followup_handler(self, mock_store, mock_settings):
         app = MagicMock()
@@ -247,6 +338,12 @@ class TestSlackHandlers:
             chat_id="slack:C_SLACK",
             user_display_name="Yury",
             on_tool_failure=ANY,
+        )
+        mock_store.register_bot_message.assert_has_awaits(
+            [
+                call("1111", "general_query", incident_id="incident-2"),
+                call("12345.6789", "general_query", incident_id="incident-2"),
+            ]
         )
 
     async def test_slack_unrelated_thread_is_ignored(self, mock_store, mock_settings):
@@ -546,7 +643,9 @@ class TestDiscordHandlers:
         message.content = "<@123456> inspect"
         message.mentions = [bot.user]
         message.reference = None
-        indicator = AsyncMock(id=8888)
+        indicator = MagicMock()
+        indicator.id = 8888
+        indicator.edit = AsyncMock()
         message.reply.return_value = indicator
 
         async def followup_with_failure(**kwargs):
@@ -565,6 +664,11 @@ class TestDiscordHandlers:
 
         assert "sources are unavailable" in indicator.edit.await_args_list[0].kwargs["content"]
         assert indicator.edit.await_args_list[1].kwargs["content"] == "Partial answer"
+        mock_store.register_bot_message.assert_awaited_once_with(
+            "8888",
+            "general_query",
+            incident_id=None,
+        )
 
     async def test_discord_on_message_empty_mention_deletes_indicator(
         self, mock_store, mock_settings
@@ -690,8 +794,11 @@ class TestDiscordHandlers:
         message.mentions = [bot.user]
         message.reference = None
 
-        indicator = AsyncMock(id=8888)
-        continuation = AsyncMock(id=9999)
+        indicator = MagicMock()
+        indicator.id = 8888
+        indicator.edit = AsyncMock()
+        continuation = MagicMock()
+        continuation.id = 9999
         message.reply.side_effect = [indicator, continuation]
         answer = "x" * 2500
 
@@ -710,10 +817,6 @@ class TestDiscordHandlers:
         assert len(first_chunk) <= 1900
         assert len(second_chunk) <= 1900
         assert mock_store.register_bot_message.call_count == 2
-
-    def test_split_discord_message_rejects_invalid_limit(self):
-        with pytest.raises(ValueError, match="positive"):
-            split_discord_message("text", limit=0)
 
     async def test_discord_bot_message_skips_chat_logic_but_reaches_alert_parser(
         self, mock_store, mock_settings

@@ -4,6 +4,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 from aiotimebot import Propagation
 
+from srebot.bot.delivery import DeliveryReceipt
 from srebot.bot.time.handlers import (
     TimeBotIdentity,
     TimeChatAdapter,
@@ -119,15 +120,20 @@ async def test_top_level_command_uses_universal_command_handler():
             AsyncMock(return_value="No active silences"),
         ) as command,
         patch(
-            "srebot.bot.time.handlers._send_thread_message",
-            AsyncMock(return_value="reply-1"),
+            "srebot.bot.time.handlers._deliver_text",
+            AsyncMock(return_value=DeliveryReceipt.from_ids(("reply-1",), 1)),
         ) as send,
         patch("srebot.bot.time.handlers.process_alert_text", AsyncMock()) as process,
     ):
         await handle_posted_event(event, client, _settings(), identity)
 
     command.assert_awaited_once_with("/status", None, "time:channel-1", bot_username="srebot")
-    send.assert_awaited_once_with(client, event, "No active silences", False)
+    send.assert_awaited_once_with(
+        client,
+        event,
+        "No active silences",
+        thread_root="post-1",
+    )
     process.assert_not_called()
 
 
@@ -138,6 +144,9 @@ async def test_thread_followup_uses_root_incident_context():
     store = AsyncMock()
     store.get_bot_message_context.return_value = {
         "fingerprint": "group-fp",
+        "incident_id": "incident-1",
+    }
+    store.get_followup_context.return_value = {
         "incident_id": "incident-1",
     }
 
@@ -157,7 +166,7 @@ async def test_thread_followup_uses_root_incident_context():
         ) as followup,
         patch(
             "srebot.bot.time.handlers._finish_followup",
-            AsyncMock(return_value="indicator-1"),
+            AsyncMock(return_value=DeliveryReceipt.from_ids(("indicator-1",), 1)),
         ),
     ):
         await handle_posted_event(event, client, _settings(), identity)
@@ -186,6 +195,9 @@ async def test_time_mcp_failure_updates_indicator():
         "fingerprint": "group-fp",
         "incident_id": "incident-1",
     }
+    store.get_followup_context.return_value = {
+        "incident_id": "incident-1",
+    }
 
     async def followup_with_failure(**kwargs):
         await kwargs["on_tool_failure"](["unavailable-tool"])
@@ -208,12 +220,16 @@ async def test_time_mcp_failure_updates_indicator():
         patch("srebot.bot.time.handlers._edit_post", AsyncMock()) as edit_post,
         patch(
             "srebot.bot.time.handlers._finish_followup",
-            AsyncMock(return_value="indicator-1"),
+            AsyncMock(return_value=DeliveryReceipt.from_ids(("indicator-1",), 1)),
         ),
     ):
         await handle_posted_event(event, client, _settings(), identity)
 
     assert "sources are unavailable" in edit_post.await_args.args[2]
+    assert store.register_bot_message.await_args_list == [
+        (("indicator-1", "group-fp"), {"incident_id": "incident-1"}),
+        (("alert-root", "group-fp"), {"incident_id": "incident-1"}),
+    ]
 
 
 async def test_direct_mention_starts_general_followup():
@@ -239,7 +255,7 @@ async def test_direct_mention_starts_general_followup():
         ) as followup,
         patch(
             "srebot.bot.time.handlers._finish_followup",
-            AsyncMock(return_value="indicator-1"),
+            AsyncMock(return_value=DeliveryReceipt.from_ids(("indicator-1",), 1)),
         ),
     ):
         await handle_posted_event(event, client, _settings(), identity)
@@ -265,14 +281,18 @@ async def test_adapter_creates_incident_root_and_edits_placeholder():
     client.send_message = AsyncMock(return_value=sent_post)
     adapter = TimeChatAdapter(event, client, dry_run=False)
 
-    placeholder_id = await adapter.send_analyzing_placeholder("group-fp", "CPUHigh", _alert(), 1)
+    placeholder_receipt = await adapter.send_analyzing_placeholder(
+        "group-fp", "CPUHigh", _alert(), 1
+    )
+    placeholder_id = placeholder_receipt.primary_message_id
     with patch("srebot.bot.time.handlers._edit_post", AsyncMock()) as edit:
         result = await adapter.update_with_analysis(
             "group-fp", placeholder_id, "analysis", is_billing_error=True
         )
 
     assert placeholder_id == "placeholder-1"
-    assert result == "placeholder-1"
+    assert placeholder_receipt.message_ids == ("placeholder-1",)
+    assert result.primary_message_id == "placeholder-1"
     client.send_message.assert_awaited_once()
     assert "root_id" not in client.send_message.await_args.kwargs
     edit.assert_awaited_once_with(client, "placeholder-1", "analysis")

@@ -7,18 +7,33 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 import srebot.config as config
-import srebot.state.store as state_store
+from srebot.bot.delivery import (
+    DeliveryReceipt,
+    MessageConstraints,
+    delivery_coordinator,
+    html_visible_length,
+    paginate_markdown,
+)
 from srebot.bot.shared import (
     ChatAdapter,
     RejectionReason,
     handle_followup_question,
     process_alert_text,
+    register_followup_receipt,
+    rejection_turn_limit,
 )
 from srebot.bot.telegram.html_utils import markdown_to_telegram_html
 from srebot.messages import get_chat_message
 from srebot.parser.alert_parser import Alert
 
 logger = logging.getLogger(__name__)
+
+TELEGRAM_MESSAGE_LIMIT = 3800
+TELEGRAM_CONSTRAINTS = MessageConstraints(
+    TELEGRAM_MESSAGE_LIMIT,
+    "telegram",
+    measure=html_visible_length,
+)
 
 
 def get_msg(key: str) -> str:
@@ -38,6 +53,46 @@ async def _reply(source_msg: Message, text: str, dry_run: bool) -> Message | Non
     )
 
 
+async def _deliver_markdown(
+    source_msg: Message,
+    text: str,
+    *,
+    placeholder_id: str | int | None = None,
+    first_message: Message | None = None,
+) -> DeliveryReceipt:
+    """Deliver ordered Telegram HTML chunks rendered from canonical Markdown."""
+    chunks = paginate_markdown(text, TELEGRAM_CONSTRAINTS, markdown_to_telegram_html)
+
+    async def send_chunk(rendered: str, _primary_id: str | None) -> str:
+        sent = await source_msg.reply_text(
+            rendered,
+            parse_mode=ParseMode.HTML,
+            reply_to_message_id=source_msg.message_id,
+        )
+        return str(sent.message_id)
+
+    async def edit_first(rendered: str) -> str:
+        if first_message is not None:
+            await first_message.edit_text(rendered, parse_mode=ParseMode.HTML)
+            return str(first_message.message_id)
+        if placeholder_id is None:
+            raise RuntimeError("no Telegram placeholder is available")
+        await source_msg.get_bot().edit_message_text(
+            chat_id=source_msg.chat_id,
+            message_id=placeholder_id,
+            text=rendered,
+            parse_mode=ParseMode.HTML,
+        )
+        return str(placeholder_id)
+
+    return await delivery_coordinator.deliver(
+        f"telegram:{source_msg.chat_id}",
+        chunks,
+        send_chunk,
+        edit_first if placeholder_id is not None or first_message is not None else None,
+    )
+
+
 class TelegramChatAdapter(ChatAdapter):
     def __init__(self, source_msg: Message, dry_run: bool):
         self.source_msg = source_msg
@@ -49,90 +104,87 @@ class TelegramChatAdapter(ChatAdapter):
     async def send_resolved(
         self, label: str, primary: Alert, current_status: str, reply_to_id: str | None
     ) -> None:
+        text = get_chat_message(
+            "resolved_alert",
+            config.get_settings().llm_response_language,
+            "markdown",
+        ).format(
+            alertname=primary.alertname,
+            cluster=primary.cluster,
+            job=primary.labels.get("job", "—"),
+        )
         try:
-            await _reply(
-                self.source_msg,
-                get_msg("resolved_alert").format(
-                    alertname=primary.alertname,
-                    cluster=primary.cluster,
-                    job=primary.labels.get("job", "—"),
-                ),
-                self.dry_run,
-            )
+            if self.dry_run:
+                logger.info("[DRY-RUN] Would send Telegram resolved message:\n%s", text)
+            else:
+                await _deliver_markdown(self.source_msg, text)
         except Exception as exc:
             logger.warning("Could not send resolved reply: %s", exc)
 
     async def send_short_notification(
         self, group_fp: str, label: str, primary: Alert
-    ) -> str | int | None:
-        msg_text = get_msg("new_alert").format(
+    ) -> DeliveryReceipt:
+        msg_text = get_chat_message(
+            "new_alert",
+            config.get_settings().llm_response_language,
+            "markdown",
+        ).format(
             alertname=primary.alertname,
             cluster=primary.cluster,
             job=primary.labels.get("job", "—"),
         )
+        chunks = paginate_markdown(msg_text, TELEGRAM_CONSTRAINTS, markdown_to_telegram_html)
         if self.dry_run:
             logger.info("[DRY-RUN] Would send Telegram short notification:\n%s", msg_text)
-            return None
+            return DeliveryReceipt.from_ids((), len(chunks))
         try:
-            placeholder = await self.source_msg.reply_text(
-                msg_text,
-                parse_mode=ParseMode.HTML,
-                reply_to_message_id=self.source_msg.message_id,
-            )
-            return placeholder.message_id
+            return await _deliver_markdown(self.source_msg, msg_text)
         except Exception as exc:
             logger.error("Failed to send short notification: %s", exc)
-            return None
+            return DeliveryReceipt.from_ids((), len(chunks))
 
     async def send_analyzing_placeholder(
         self, group_fp: str, label: str, primary: Alert, alert_count: int
-    ) -> str | int | None:
+    ) -> DeliveryReceipt:
+        text = (
+            get_chat_message(
+                "analyzing_alerts",
+                config.get_settings().llm_response_language,
+                "markdown",
+            ).format(count=alert_count)
+            + "\n"
+            f"`{primary.alertname}` · "
+            f"{primary.cluster} · {primary.labels.get('job', '')}"
+        )
+        chunks = paginate_markdown(text, TELEGRAM_CONSTRAINTS, markdown_to_telegram_html)
         if self.dry_run:
             logger.info(
                 "[DRY-RUN] Analyzing group %s: %d alert(s) (no Telegram placeholder sent)",
                 group_fp,
                 alert_count,
             )
-            return None
+            return DeliveryReceipt.from_ids((), len(chunks))
         try:
-            placeholder = await self.source_msg.reply_text(
-                get_msg("analyzing_alerts").format(count=alert_count) + "\n"
-                f"<code>{primary.alertname}</code> · "
-                f"{primary.cluster} · {primary.labels.get('job', '')}",
-                parse_mode=ParseMode.HTML,
-                reply_to_message_id=self.source_msg.message_id,
-            )
-            return placeholder.message_id
+            return await _deliver_markdown(self.source_msg, text)
         except Exception as exc:
             logger.error("Failed to send placeholder reply: %s", exc)
-            return None
+            return DeliveryReceipt.from_ids((), len(chunks))
 
     async def update_with_analysis(
         self, group_fp: str, placeholder_id: str | int | None, analysis: str, is_billing_error: bool
-    ) -> str | int | None:
-        safe_analysis = markdown_to_telegram_html(analysis)
+    ) -> DeliveryReceipt:
         if not is_billing_error:
             ttl_hours = config.get_settings().followup_ttl // 3600
-            safe_analysis += get_msg("ttl_footer").format(hours=ttl_hours)
+            analysis += get_msg("ttl_footer").format(hours=ttl_hours)
 
-        if placeholder_id is None:
-            if not self.dry_run:
-                msg = await _reply(self.source_msg, safe_analysis, self.dry_run)
-                return msg.message_id if msg else None
-            return None
-
-        try:
-            await self.source_msg.get_bot().edit_message_text(
-                chat_id=self.source_msg.chat_id,
-                message_id=placeholder_id,
-                text=safe_analysis,
-                parse_mode=ParseMode.HTML,
-            )
-            return placeholder_id
-        except Exception as exc:
-            logger.error("Could not update placeholder %s with analysis: %s", placeholder_id, exc)
-            msg = await _reply(self.source_msg, safe_analysis, self.dry_run)
-            return msg.message_id if msg else None
+        chunks = paginate_markdown(analysis, TELEGRAM_CONSTRAINTS, markdown_to_telegram_html)
+        if self.dry_run:
+            return DeliveryReceipt.from_ids((), len(chunks))
+        return await _deliver_markdown(
+            self.source_msg,
+            analysis,
+            placeholder_id=placeholder_id,
+        )
 
 
 async def _handle_alert_group(
@@ -236,7 +288,10 @@ async def followup_reply_handler(update: Update, context: ContextTypes.DEFAULT_T
             command_text, cmd_reply_to_id, chat_id, bot_username=context.bot.username
         )
         if response:
-            await _reply(msg, markdown_to_telegram_html(response), dry_run)
+            if dry_run:
+                logger.info("[DRY-RUN] Telegram command response:\n%s", response)
+            else:
+                await _deliver_markdown(msg, response)
             return
 
     logger.debug(
@@ -305,68 +360,33 @@ async def followup_reply_handler(update: Update, context: ContextTypes.DEFAULT_T
         if rejection == RejectionReason.COOLDOWN:
             user_msg = get_msg("cooldown")
         else:  # LIMIT_REACHED
-            max_turns = config.get_settings().followup_max_turns
+            max_turns = rejection_turn_limit(config.get_settings(), rejection)
             user_msg = get_msg("limit_reached").format(current=max_turns, max=max_turns)
 
-        if indicator:
-            try:
-                await indicator.edit_text(user_msg, parse_mode=ParseMode.HTML)
-            except Exception as exc:
-                logger.warning("Could not edit follow-up rejection message: %s", exc)
+        if not dry_run:
+            receipt = await _deliver_markdown(msg, user_msg, first_message=indicator)
+            await register_followup_receipt(
+                receipt,
+                fp_used,
+                new_incident_id,
+                chat_id,
+            )
         else:
-            if not dry_run:
-                try:
-                    await msg.reply_text(
-                        user_msg,
-                        parse_mode=ParseMode.HTML,
-                        reply_to_message_id=msg.message_id,
-                    )
-                except Exception as exc:
-                    logger.warning("Could not send follow-up rejection message: %s", exc)
-            else:
-                logger.info("[DRY-RUN] Follow-up rejection (%s): %s", rejection.value, user_msg)
+            logger.info("[DRY-RUN] Follow-up rejection (%s): %s", rejection.value, user_msg)
         return
 
     if dry_run:
         logger.info("[DRY-RUN] Follow-up answer for user=%s:\n%s", user_id, answer)
         return
 
-    # Success path
-    new_bot_msg = None
-    if indicator:
-        try:
-            safe_answer = markdown_to_telegram_html(answer)
-            new_bot_msg = await indicator.edit_text(safe_answer, parse_mode=ParseMode.HTML)
-        except Exception as exc:
-            logger.warning("Could not edit follow-up answer: %s", exc)
-            try:
-                new_bot_msg = await msg.reply_text(
-                    markdown_to_telegram_html(answer),
-                    parse_mode=ParseMode.HTML,
-                    reply_to_message_id=msg.message_id,
-                )
-            except Exception as exc2:
-                logger.error("Total failure sending follow-up answer: %s", exc2)
-    else:
-        try:
-            new_bot_msg = await msg.reply_text(
-                markdown_to_telegram_html(answer),
-                parse_mode=ParseMode.HTML,
-                reply_to_message_id=msg.message_id,
-            )
-        except Exception as exc:
-            logger.error("Failure sending follow-up answer (no indicator): %s", exc)
+    receipt = await _deliver_markdown(msg, answer, first_message=indicator)
 
-    final_msg_id = None
-    if new_bot_msg and hasattr(new_bot_msg, "message_id"):
-        final_msg_id = new_bot_msg.message_id
-    elif indicator:
-        final_msg_id = indicator.message_id
-
-    if final_msg_id and new_incident_id and fp_used:
-        store = await state_store.get_store()
-        await store.register_bot_message(final_msg_id, fp_used, incident_id=new_incident_id)
-        await store.set_last_active_incident(chat_id, fp_used)
+    await register_followup_receipt(
+        receipt,
+        fp_used,
+        new_incident_id,
+        chat_id,
+    )
 
 
 async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -416,7 +436,10 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 msg.text, None, chat_id, bot_username=context.bot.username
             )
             if response:
-                await _reply(msg, markdown_to_telegram_html(response), dry_run)
+                if dry_run:
+                    logger.info("[DRY-RUN] Telegram command response:\n%s", response)
+                else:
+                    await _deliver_markdown(msg, response)
                 return
 
     await process_alert_text(msg.text, _handle_alert_group, msg)

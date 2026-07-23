@@ -61,6 +61,37 @@ TIME_CHANNEL_ID=replace-with-Time-channel-id
 
 The integration receives posts over Time's authenticated WebSocket and uses REST for replies and edits. It has the same alert grouping, filtering, deduplication, automatic analysis, follow-up context, and `mute` / `unmute` / `status` command behavior as Telegram. Each analyzed alert group gets its own Time thread, so multi-alert notifications retain separate follow-up context; direct `@bot_username` mentions also start follow-up or general queries.
 
+### Long messages and follow-up limits
+
+SREBot paginates long analyses, command results, follow-ups, cooldown notices, and quota notices
+before delivery. Each chunk is rendered independently and sent in order. The conservative targets
+are 3,800 visible characters for Telegram, 3,800 characters for Slack, and 1,900 characters for
+Discord. Slack and Time continuations stay in the same thread, and replies to any delivered chunk
+resolve to the same incident context. If delivery stops after some chunks, successfully delivered
+chunks remain registered and the failed chunks are not replayed blindly.
+
+Time reads `MaxPostSize` from `/api/v4/config/client` at startup and subtracts a 128-character
+safety reserve. If the endpoint is unavailable or the value is invalid, it uses a 15,500-character
+fallback.
+
+Follow-up admission is scoped by platform, chat, and user and is reserved atomically in Redis:
+
+```dotenv
+# Deprecated per-user alias; retained for backward compatibility.
+FOLLOWUP_MAX_TURNS=5
+# Optional per-user, per-incident override. Leave empty or unset to use FOLLOWUP_MAX_TURNS.
+FOLLOWUP_USER_MAX_TURNS=
+# Shared cap across all users for one incident.
+FOLLOWUP_INCIDENT_MAX_TURNS=20
+FOLLOWUP_USER_COOLDOWN_SEC=10
+FOLLOWUP_TTL=43200
+```
+
+Accepted incident follow-ups consume both the user's incident quota and the total incident quota.
+General queries use the scoped cooldown but do not consume incident turns. Empty values in the
+environment template are ignored, so unused optional and integer placeholders retain their
+application defaults.
+
 ---
 
 ## ⚙️ Configuration

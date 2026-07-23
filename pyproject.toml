@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Multi-platform chat bot that analyzes Prometheus alerts using LLM and MCP tools"
 requires-python = ">=3.14"  # Proactively migration to 3.14
 dependencies = [
-    "python-telegram-bot[ext]>=22.7",
+    "python-telegram-bot[ext,rate-limiter]>=22.7",
     "httpx>=0.28.1",
     "pydantic-settings[yaml]>=2.13.1",
     "pyyaml>=6.0.3",
@@ -21,6 +21,7 @@ dependencies = [
     "markdown>=3.10.2",
     "discord-py>=2.7.1",
     "aiotimebot==0.1.1",
+    "regex>=2026.1.15",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -40,6 +41,7 @@ select = ["E", "F", "I", "UP"]
 [dependency-groups]
 dev = [
     "bandit>=1.9.4",
+    "fakeredis[lua]>=2.32.1",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
     "pytest-mock>=3.15.1",
