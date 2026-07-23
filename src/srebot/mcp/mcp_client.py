@@ -112,7 +112,12 @@ class ExternalMCPClient:
                 )
             else:
                 # sse_client returns (read_stream, write_stream)
-                read, write = await self._exit_stack.enter_async_context(sse_client(self.url))
+                # MCP's five-minute default is an inactivity timeout, not a request timeout.
+                # Keep persistent SSE sessions open while idle; individual tool calls remain
+                # bounded by _TOOL_CALL_TIMEOUT and reset the session when they time out.
+                read, write = await self._exit_stack.enter_async_context(
+                    sse_client(self.url, sse_read_timeout=None)
+                )
 
             self._session = await self._exit_stack.enter_async_context(ClientSession(read, write))
             await self._session.initialize()

@@ -169,9 +169,11 @@ async def test_call_tool_serializes_parallel_calls_on_single_client():
 @pytest.mark.asyncio
 async def test_transport_is_opened_used_and_closed_by_same_owner_task(monkeypatch):
     task_ids: dict[str, int] = {}
+    transport_options: dict[str, object] = {}
 
     @asynccontextmanager
-    async def fake_sse_client(_url: str):
+    async def fake_sse_client(_url: str, **kwargs):
+        transport_options.update(kwargs)
         task_ids["transport_enter"] = id(asyncio.current_task())
         try:
             yield object(), object()
@@ -207,6 +209,7 @@ async def test_transport_is_opened_used_and_closed_by_same_owner_task(monkeypatc
 
     assert len(set(task_ids.values())) == 1
     assert task_ids["transport_enter"] != caller_task_id
+    assert transport_options["sse_read_timeout"] is None
 
 
 @pytest.mark.asyncio
@@ -216,7 +219,7 @@ async def test_cancelled_caller_does_not_cancel_owner_task_or_break_shutdown(mon
     owner_task_ids: list[int] = []
 
     @asynccontextmanager
-    async def fake_sse_client(_url: str):
+    async def fake_sse_client(_url: str, **_kwargs):
         owner_task_ids.append(id(asyncio.current_task()))
         try:
             yield object(), object()
@@ -263,7 +266,7 @@ async def test_shutdown_cancels_active_and_queued_calls(monkeypatch):
     tool_started = asyncio.Event()
 
     @asynccontextmanager
-    async def fake_sse_client(_url: str):
+    async def fake_sse_client(_url: str, **_kwargs):
         yield object(), object()
 
     class FakeSession:
@@ -304,7 +307,7 @@ async def test_submit_during_close_is_rejected_without_hanging(monkeypatch):
     allow_transport_close = asyncio.Event()
 
     @asynccontextmanager
-    async def fake_sse_client(_url: str):
+    async def fake_sse_client(_url: str, **_kwargs):
         try:
             yield object(), object()
         finally:

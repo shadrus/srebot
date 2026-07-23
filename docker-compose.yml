@@ -17,7 +17,7 @@ services:
     ports:
       - "6379:6379"
     healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -34,7 +34,7 @@ services:
   elasticsearch-mcp:
     image: docker.elastic.co/mcp/elasticsearch:latest
     restart: unless-stopped
-    command: [ "http", "--address", "0.0.0.0:18001" ]
+    command: ["http", "--address", "0.0.0.0:18001"]
     network_mode: "host"
     environment:
       ES_URL: "http://localhost:19001"
