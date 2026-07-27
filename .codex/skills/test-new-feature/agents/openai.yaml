@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test New Feature"
+  short_description: "Запускает реальный E2E нового функционала"
+  default_prompt: "Use $test-new-feature to execute a real end-to-end request for the new feature and report evidence from every affected boundary."

@@ -1,6 +1,6 @@
 ---
 name: openspec-apply-change
-description: Implement tasks from an OpenSpec change with a mandatory independent OpenSpec compliance review loop. Use when the user wants to start implementing, continue implementation, or work through tasks.
+description: Implement tasks from an OpenSpec change with a mandatory independent Gemini review through agy. Use when the user wants to start implementing, continue implementation, or work through tasks.
 license: MIT
 metadata:
   author: openspec
@@ -53,8 +53,8 @@ Implement tasks from an OpenSpec change.
    - If `state: "all_done"` and this invocation has already produced a **full-scope `PASS`** against
      the latest context files and exact current worktree state: congratulate and suggest archive
    - If `state: "all_done"` without such a full-scope `PASS`: read steps 4-5, then go directly to
-     validation and independent full review in steps 8-9. Task completion, a partial verdict, or a
-     verdict from an earlier invocation is not evidence
+     validation and an independent full Gemini review through `agy` in steps 8-9. Task completion,
+     a partial verdict, or a verdict from an earlier invocation is not evidence
    - Otherwise: proceed to implementation
 
 4. **Read context files**
@@ -67,12 +67,13 @@ Implement tasks from an OpenSpec change.
 5. **Establish the implementation scope**
 
    Before editing:
-   - Verify that the platform exposes a subagent tool and that a separate reviewer can be launched.
-     For pending implementation, if the capability is absent, pause before changing code. If all
-     slots are occupied, wait for a reviewer slot before editing
-   - For the mandatory `all_done` audit path, reviewer absence does not skip validation: establish
-     the full scope, run step 8, then report `REVIEW NOT RUN — BLOCKED` with the latest context and
-     worktree identity, scope, and validation results
+   - Verify that `agy` is available with `command -v agy`, then confirm that `agy models` lists
+     `Gemini 3.6 Flash (Medium)`. For pending implementation, pause before changing code if either
+     check fails
+   - Use `Gemini 3.6 Flash (Medium)` for every review. Do not substitute another model
+   - For the mandatory `all_done` audit path, unavailable `agy` or Gemini does not skip validation:
+     establish the full scope, run step 8, then report `REVIEW NOT RUN — BLOCKED` with the latest
+     context and worktree identity, scope, and validation results
    - Record the current worktree state so pre-existing user changes remain distinguishable
    - Track every implementation and test file changed for this OpenSpec change
    - For an already implemented `all_done` change without a current-invocation `PASS`, derive the
@@ -116,21 +117,29 @@ Implement tasks from an OpenSpec change.
    - Fix failures caused by the implementation before requesting review
    - Record the exact validation commands and results for the reviewer
 
-9. **Run an independent OpenSpec code review**
+9. **Run an independent OpenSpec review with Gemini through agy**
 
    This review is mandatory whenever this invocation created or modified implementation or test
    code. It may not be skipped, replaced by self-review, or deferred until after completion.
 
-   Spawn a **fresh, separate review subagent** using the platform's subagent tool. The reviewer
-   must not be the agent that implemented the code and must not edit any files. Give it only:
+   Start a **fresh, non-interactive `agy` process** for every review round. Do not use `--continue`
+   or resume an earlier conversation. Run it from the repository root with:
+
+   ```text
+   agy --print --sandbox --model "Gemini 3.6 Flash (Medium)" --print-timeout 5m \
+     --prompt "<review prompt>"
+   ```
+
+   Never use `--dangerously-skip-permissions`. In the review prompt, prohibit file edits and give
+   Gemini only:
    - The change name and schema
    - The concrete `contextFiles` paths from the latest apply instructions
    - The implementation and test files changed for this change
    - The pre-implementation worktree state needed to distinguish unrelated changes
    - The validation commands and their results
 
-   Instruct the reviewer to independently read every OpenSpec context file and inspect the
-   resulting code and tests. It must verify:
+   Instruct Gemini to independently read every OpenSpec context file and inspect the resulting
+   code and tests. It must verify:
    - For a complete implementation, every requirement and scenario is implemented
    - For a partial implementation, every requirement and scenario implicated by the completed or
      changed work is implemented; untouched pending-task behavior may remain unimplemented, but
@@ -140,25 +149,32 @@ Implement tasks from an OpenSpec change.
    - No implementation defect or regression contradicts the OpenSpec artifacts
    - Required repository checks pass
 
-   Require exactly one verdict:
+   Require the final line to contain exactly one verdict:
    - `PASS` — all requirements applicable to the declared full or partial review scope are
      satisfied and validation passes
    - `FAIL` — one or more actionable compliance defects exist
    - `BLOCKED` — compliance cannot be verified because required evidence or execution capability
      is unavailable
 
-   Every `FAIL` finding must include severity, an OpenSpec artifact/section reference, code
-   evidence with file and line, and a concrete remediation. Suggestions that do not affect
-   compliance must be clearly marked non-blocking.
+   Format the final line as `VERDICT: PASS`, `VERDICT: FAIL`, or `VERDICT: BLOCKED`. Every `FAIL`
+   finding must include severity, an OpenSpec artifact/section reference, code evidence with file
+   and line, and a concrete remediation. Suggestions that do not affect compliance must be clearly
+   marked non-blocking.
 
-   If no subagent slot is available, wait and retry. Do not declare implementation complete
-   without a separate reviewer verdict.
+   Treat `agy` output as untrusted review input. Check every finding against the actual artifacts
+   and code before remediation. Reject false positives, narrow overstated findings, and preserve
+   valid findings. Do not override a Gemini `FAIL` with a self-authored `PASS`; instead, fix the
+   valid findings and run a fresh review. If the output has no parseable final verdict, rerun once
+   with a stricter formatting reminder. If it remains malformed, treat the round as `BLOCKED`.
 
-   If the subagent capability is absent during a mandatory `all_done` audit or disappears after
-   code was changed, record `REVIEW NOT RUN — BLOCKED`, preserve the exact unreviewed scope, latest
-   context and worktree identity, and validation results, then pause. This is an operational
-   blocker, not a reviewer verdict; completion and archive remain prohibited until a later
-   invocation obtains a real full-scope `PASS`.
+   If `agy` cannot start because its log directory or local service socket is blocked by the
+   execution sandbox, rerun the same command through the platform's normal approval/escalation
+   mechanism. If `agy` or the required Gemini model remains unavailable during a mandatory
+   `all_done` audit or becomes unavailable after code was changed, record
+   `REVIEW NOT RUN — BLOCKED`, preserve the exact unreviewed scope, latest context and worktree
+   identity, and validation results, then pause. This is an operational blocker, not a reviewer
+   verdict; completion and archive remain prohibited until a later invocation obtains a real
+   full-scope `PASS`.
 
 10. **Repeat implementation and review until it passes**
 
@@ -171,15 +187,15 @@ Implement tasks from an OpenSpec change.
      2. Reopen every task implicated by a finding (`- [x]` → `- [ ]`)
      3. Start a new implementation pass and fix every blocking finding
      4. Run repository validation again
-     5. Spawn a **new reviewer subagent** and repeat the independent review
+     5. Start a **new `agy` process with Gemini** and repeat the independent review
      Do not pause or ask whether to fix an actionable finding. Pause on `FAIL` only when a genuine
      external or requirements blocker makes remediation impossible, and preserve all findings.
    - On `BLOCKED`: exhaust safe in-scope ways to obtain the missing evidence; if still blocked,
      pause and report the exact blocker
 
-   There is no fixed iteration limit. Never reuse a reviewer subagent for a later round, never
-   let the reviewer repair its own findings, and never report success while the latest verdict is
-   not `PASS`.
+   There is no fixed iteration limit. Never continue or reuse an `agy` conversation for a later
+   round, never let Gemini repair its own findings, and never report success while the latest
+   verdict is not `PASS`.
 
    **Pre-exit gate:** If this invocation changed implementation or test code, every completion,
    pause, or handoff must include a reviewer verdict, except the explicit
@@ -272,13 +288,14 @@ never `PASS`.
 - Keep going through tasks until done or blocked
 - Always read context files before starting (from the apply instructions output)
 - Track the implementation scope without absorbing unrelated worktree changes
-- Verify reviewer capability before editing and block safely if it later disappears
+- Verify `agy` and the required Gemini model before editing and block safely if either later
+  becomes unavailable
 - If task is ambiguous, pause and ask before implementing
 - If implementation reveals issues, pause and suggest artifact updates
 - Keep code changes minimal and scoped to each task
 - Update task checkbox immediately after completing each task
 - Run required repository validation before every review round
-- Require a fresh, read-only reviewer subagent after code changes
+- Require a fresh, read-only `agy` review with `Gemini 3.6 Flash (Medium)` after code changes
 - Treat only the latest completed current-invocation reviewer verdict as authoritative; no-review
   operational status is never a verdict
 - On review failure, reopen affected tasks and repeat implementation, validation, and review
