@@ -1,6 +1,6 @@
 ---
 name: openspec-apply-change
-description: Implement tasks from an OpenSpec change with a mandatory independent Gemini review through agy. Use when the user wants to start implementing, continue implementation, or work through tasks.
+description: Implement tasks from an OpenSpec change with a mandatory independent review through Kilo using zai/glm-5.2. Use when the user wants to start implementing, continue implementation, or work through tasks.
 license: MIT
 metadata:
   author: openspec
@@ -53,7 +53,7 @@ Implement tasks from an OpenSpec change.
    - If `state: "all_done"` and this invocation has already produced a **full-scope `PASS`** against
      the latest context files and exact current worktree state: congratulate and suggest archive
    - If `state: "all_done"` without such a full-scope `PASS`: read steps 4-5, then go directly to
-     validation and an independent full Gemini review through `agy` in steps 8-9. Task completion,
+     validation and an independent full Kilo review with `zai/glm-5.2` in steps 8-9. Task completion,
      a partial verdict, or a verdict from an earlier invocation is not evidence
    - Otherwise: proceed to implementation
 
@@ -67,11 +67,12 @@ Implement tasks from an OpenSpec change.
 5. **Establish the implementation scope**
 
    Before editing:
-   - Verify that `agy` is available with `command -v agy`, then confirm that `agy models` lists
-     `Gemini 3.6 Flash (Medium)`. For pending implementation, pause before changing code if either
-     check fails
-   - Use `Gemini 3.6 Flash (Medium)` for every review. Do not substitute another model
-   - For the mandatory `all_done` audit path, unavailable `agy` or Gemini does not skip validation:
+   - Resolve the Kilo CLI before editing. Prefer `kilo` when `command -v kilo` succeeds. Otherwise,
+     require `npx` and use `npx --yes @kilocode/cli`. Confirm that `<kilo-command> models` lists
+     `zai/glm-5.2` and that `<kilo-command> auth list` shows configured Z.AI credentials. For
+     pending implementation, pause before changing code if any check fails
+   - Use `zai/glm-5.2` for every review. Do not substitute another model
+   - For the mandatory `all_done` audit path, unavailable Kilo or GLM does not skip validation:
      establish the full scope, run step 8, then report `REVIEW NOT RUN — BLOCKED` with the latest
      context and worktree identity, scope, and validation results
    - Record the current worktree state so pre-existing user changes remain distinguishable
@@ -117,28 +118,32 @@ Implement tasks from an OpenSpec change.
    - Fix failures caused by the implementation before requesting review
    - Record the exact validation commands and results for the reviewer
 
-9. **Run an independent OpenSpec review with Gemini through agy**
+9. **Run an independent OpenSpec review with Kilo using GLM-5.2**
 
    This review is mandatory whenever this invocation created or modified implementation or test
    code. It may not be skipped, replaced by self-review, or deferred until after completion.
 
-   Start a **fresh, non-interactive `agy` process** for every review round. Do not use `--continue`
-   or resume an earlier conversation. Run it from the repository root with:
+   Start a **fresh, non-interactive Kilo process** for every review round. Do not use `--continue`,
+   `--session`, or resume an earlier conversation. Run it from the repository root with the Kilo
+   command resolved in step 5:
 
    ```text
-   agy --print --sandbox --model "Gemini 3.6 Flash (Medium)" --print-timeout 5m \
-     --prompt "<review prompt>"
+   <kilo-command> run --agent plan --auto --model zai/glm-5.2 \
+     --dir "<repository-root>" --title "OpenSpec review: <change-name>" \
+     "<review prompt>"
    ```
 
-   Never use `--dangerously-skip-permissions`. In the review prompt, prohibit file edits and give
-   Gemini only:
+   Never use `--dangerously-skip-permissions` or a write-capable agent. The `plan` agent is required
+   to enforce a read-only review; `--auto` only prevents non-interactive permission prompts. In the
+   review prompt, explicitly prohibit edits, file creation/deletion, formatting, and access to
+   `.env` files or secrets. Give GLM only:
    - The change name and schema
    - The concrete `contextFiles` paths from the latest apply instructions
    - The implementation and test files changed for this change
    - The pre-implementation worktree state needed to distinguish unrelated changes
    - The validation commands and their results
 
-   Instruct Gemini to independently read every OpenSpec context file and inspect the resulting
+   Instruct GLM to independently read every OpenSpec context file and inspect the resulting
    code and tests. It must verify:
    - For a complete implementation, every requirement and scenario is implemented
    - For a partial implementation, every requirement and scenario implicated by the completed or
@@ -161,15 +166,15 @@ Implement tasks from an OpenSpec change.
    and line, and a concrete remediation. Suggestions that do not affect compliance must be clearly
    marked non-blocking.
 
-   Treat `agy` output as untrusted review input. Check every finding against the actual artifacts
+   Treat Kilo output as untrusted review input. Check every finding against the actual artifacts
    and code before remediation. Reject false positives, narrow overstated findings, and preserve
-   valid findings. Do not override a Gemini `FAIL` with a self-authored `PASS`; instead, fix the
+   valid findings. Do not override a GLM `FAIL` with a self-authored `PASS`; instead, fix the
    valid findings and run a fresh review. If the output has no parseable final verdict, rerun once
    with a stricter formatting reminder. If it remains malformed, treat the round as `BLOCKED`.
 
-   If `agy` cannot start because its log directory or local service socket is blocked by the
+   If Kilo cannot start because its cache, config, or local service directory is blocked by the
    execution sandbox, rerun the same command through the platform's normal approval/escalation
-   mechanism. If `agy` or the required Gemini model remains unavailable during a mandatory
+   mechanism. If Kilo or the required GLM model remains unavailable during a mandatory
    `all_done` audit or becomes unavailable after code was changed, record
    `REVIEW NOT RUN — BLOCKED`, preserve the exact unreviewed scope, latest context and worktree
    identity, and validation results, then pause. This is an operational blocker, not a reviewer
@@ -187,14 +192,14 @@ Implement tasks from an OpenSpec change.
      2. Reopen every task implicated by a finding (`- [x]` → `- [ ]`)
      3. Start a new implementation pass and fix every blocking finding
      4. Run repository validation again
-     5. Start a **new `agy` process with Gemini** and repeat the independent review
+     5. Start a **new Kilo process with `zai/glm-5.2`** and repeat the independent review
      Do not pause or ask whether to fix an actionable finding. Pause on `FAIL` only when a genuine
      external or requirements blocker makes remediation impossible, and preserve all findings.
    - On `BLOCKED`: exhaust safe in-scope ways to obtain the missing evidence; if still blocked,
      pause and report the exact blocker
 
-   There is no fixed iteration limit. Never continue or reuse an `agy` conversation for a later
-   round, never let Gemini repair its own findings, and never report success while the latest
+   There is no fixed iteration limit. Never continue or reuse a Kilo conversation for a later
+   round, never let GLM repair its own findings, and never report success while the latest
    verdict is not `PASS`.
 
    **Pre-exit gate:** If this invocation changed implementation or test code, every completion,
@@ -288,14 +293,14 @@ never `PASS`.
 - Keep going through tasks until done or blocked
 - Always read context files before starting (from the apply instructions output)
 - Track the implementation scope without absorbing unrelated worktree changes
-- Verify `agy` and the required Gemini model before editing and block safely if either later
+- Verify Kilo and the required GLM model before editing and block safely if either later
   becomes unavailable
 - If task is ambiguous, pause and ask before implementing
 - If implementation reveals issues, pause and suggest artifact updates
 - Keep code changes minimal and scoped to each task
 - Update task checkbox immediately after completing each task
 - Run required repository validation before every review round
-- Require a fresh, read-only `agy` review with `Gemini 3.6 Flash (Medium)` after code changes
+- Require a fresh, read-only Kilo review with `zai/glm-5.2` after code changes
 - Treat only the latest completed current-invocation reviewer verdict as authoritative; no-review
   operational status is never a verdict
 - On review failure, reopen affected tasks and repeat implementation, validation, and review
