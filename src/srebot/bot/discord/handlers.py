@@ -246,7 +246,7 @@ def register_handlers(bot: commands.Bot, settings: Settings) -> None:
             bot.user.name.lower() in message.content.lower()
         )
         is_bot_authored = getattr(message.author, "bot", False) is True
-        cleaned_text = clean_mentions(message.content, bot.user.id, bot.use й   ё         r.name)
+        cleaned_text = clean_mentions(message.content, bot.user.id, bot.user.name)
 
         # Check for commands using raw content first (to support e.g. /mute@srebot)
         from srebot.bot.commands import extract_chat_id, handle_command, is_command_message
