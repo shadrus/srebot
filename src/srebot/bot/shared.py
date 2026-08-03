@@ -430,6 +430,7 @@ async def handle_followup_question(
             "rca_text": rca_text,
             "alert_data": alert_data,
             "allowed_servers": allowed_servers,
+            "incident_scoped": fp != "general_query",
             "parent_incident_id": parent_incident_id,
             "user_name": user_display_name,
         }

@@ -8,6 +8,7 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
+from srebot.parser.alert_parser import Alert
 from srebot.parser.filtering import FilterCondition, IgnoreRule
 
 logger = logging.getLogger(__name__)
@@ -155,6 +156,27 @@ class MCPServerRegistry:
 
     def all_configs(self) -> list[MCPServerConfig]:
         return list(self._servers.values())
+
+    def allowed_server_names(self, alert: Alert) -> list[str]:
+        """Return MCP server names whose conditions allow the given alert.
+
+        Args:
+            alert: Validated primary alert used for request routing.
+
+        Returns:
+            Configured server names allowed for this alert in registry order.
+        """
+        allowed_servers = []
+        for server in self.all_configs():
+            if server.condition is None or server.condition.matches(alert):
+                allowed_servers.append(server.name)
+            else:
+                logger.debug(
+                    "Server %r blocked for group %s by condition",
+                    server.name,
+                    alert.alertname,
+                )
+        return allowed_servers
 
 
 # Module-level singletons (initialized once in main.py)

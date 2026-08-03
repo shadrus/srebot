@@ -47,18 +47,8 @@ class AlertAnalysisAgent:
             for a in alerts
         ]
 
-        # Determine which external MCP servers are allowed for this alert group
         registry = get_mcp_registry()
-        allowed_servers: list[str] = []
-        for server in registry.all_configs():
-            if server.condition is None or server.condition.matches(primary):
-                allowed_servers.append(server.name)
-            else:
-                logger.debug(
-                    "Server %r blocked for group %s by condition", server.name, primary.alertname
-                )
-
-        # Get schema containing only tools from allowed servers
+        allowed_servers = registry.allowed_server_names(primary)
         tools_schema = get_tools_schema(allowed_servers=allowed_servers)
 
         client = SaaSWSClient(ws_url=self._ws_url, token=self._token)
@@ -77,6 +67,7 @@ class AlertAnalysisAgent:
         rca_text: str,
         alert_data: list[dict],
         allowed_servers: list[str] | None = None,
+        incident_scoped: bool = True,
         parent_incident_id: str | None = None,
         user_name: str | None = None,
         on_tool_failure: Callable[[list[str]], Awaitable[None]] | None = None,
@@ -88,8 +79,11 @@ class AlertAnalysisAgent:
             question: The engineer's follow-up question.
             rca_text: Previous RCA analysis text shown to the engineer.
             alert_data: Original alert dicts for tool routing.
-            allowed_servers: MCP server names allowed for this cluster.
-                If None, all registered servers are used.
+            allowed_servers: Optional additional MCP server restriction. Incident
+                follow-ups are always re-scoped from alert_data. General queries use
+                all registered servers only when this value is None.
+            incident_scoped: Whether this request belongs to an incident. General
+                queries must set this to False explicitly.
             parent_incident_id: ID of the parent incident.
             user_name: Username or display name of the user asking the question.
             on_tool_failure: Optional callback invoked with failed MCP tool names.
@@ -100,7 +94,12 @@ class AlertAnalysisAgent:
         if not self._token:
             return "⚠️ Cannot answer: SAAS_AGENT_TOKEN is not configured.", None
 
-        tools_schema = get_tools_schema(allowed_servers=allowed_servers)
+        scoped_servers = self._followup_server_scope(
+            alert_data,
+            allowed_servers,
+            incident_scoped=incident_scoped,
+        )
+        tools_schema = get_tools_schema(allowed_servers=scoped_servers)
         client = SaaSWSClient(ws_url=self._ws_url, token=self._token)
 
         return await client.analyze_followup(
@@ -113,6 +112,44 @@ class AlertAnalysisAgent:
             user_name=user_name,
             on_tool_failure=on_tool_failure,
         )
+
+    @staticmethod
+    def _followup_server_scope(
+        alert_data: list[dict],
+        allowed_servers: list[str] | None,
+        *,
+        incident_scoped: bool,
+    ) -> list[str] | None:
+        """Resolve a safe MCP server scope for one follow-up request.
+
+        Args:
+            alert_data: Saved incident alerts, or an empty list for a general query.
+            allowed_servers: Optional caller restriction applied after incident routing.
+            incident_scoped: Whether fail-closed incident routing is required.
+
+        Returns:
+            Concrete incident server names, an empty fail-closed list for invalid
+            incident context, or the caller value for an unscoped general query.
+        """
+        if not incident_scoped:
+            return allowed_servers
+
+        if not alert_data:
+            logger.warning("Incident follow-up has no primary alert; disabling MCP tools")
+            return []
+
+        try:
+            primary = Alert.model_validate(alert_data[0])
+        except TypeError, ValueError:
+            logger.warning("Incident follow-up has invalid primary alert; disabling MCP tools")
+            return []
+
+        derived_servers = get_mcp_registry().allowed_server_names(primary)
+        if allowed_servers is None:
+            return derived_servers
+
+        caller_allowlist = set(allowed_servers)
+        return [server for server in derived_servers if server in caller_allowlist]
 
     async def parse_raw_text(self, text: str) -> list[Alert]:
         """

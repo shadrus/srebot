@@ -80,6 +80,7 @@ async def test_valid_incident_followup_uses_scoped_identity(store, agent):
     store.get_bot_message_context.assert_awaited_once_with("continuation-message")
     identity = store.admit_followup.await_args.args[1]
     assert identity.key == "time:C1:U1"
+    assert agent.followup.await_args.kwargs["incident_scoped"] is True
 
 
 async def test_general_query_uses_only_scoped_cooldown(store, agent):
@@ -100,6 +101,7 @@ async def test_general_query_uses_only_scoped_cooldown(store, agent):
     store.admit_followup.assert_not_awaited()
     identity = store.check_and_set_scoped_cooldown.await_args.args[0]
     assert identity.key == "discord:C1:42"
+    assert agent.followup.await_args.kwargs["incident_scoped"] is False
 
 
 async def test_missing_reply_context_consumes_no_quota(store, agent):

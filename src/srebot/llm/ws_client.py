@@ -64,10 +64,29 @@ def _format_tool_names(tool_names: set[str]) -> str:
     return ", ".join(f"`{name}`" for name in sorted(tool_names))
 
 
+def _tool_names_from_schema(tools_schema: list[dict[str, Any]]) -> frozenset[str]:
+    """Extract the exact function names authorized by one advertised tool schema.
+
+    Args:
+        tools_schema: OpenAI-compatible tools advertised for one analysis request.
+
+    Returns:
+        Immutable exact-name authorization snapshot for the request.
+    """
+    names = set()
+    for tool in tools_schema:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        name = function.get("name") if isinstance(function, dict) else None
+        if isinstance(name, str) and name:
+            names.add(name)
+    return frozenset(names)
+
+
 async def _execute_tool_calls(
     tools: list[dict[str, Any]],
     tool_executor: Any,
     log_context: str,
+    allowed_tool_names: frozenset[str],
     on_tool_failure: ToolFailureCallback | None = None,
 ) -> tuple[list[dict[str, Any]], set[str]]:
     """Execute one SaaS tool batch and report failures without aborting the analysis."""
@@ -77,6 +96,15 @@ async def _execute_tool_calls(
         tool_name = str(tool_call.get("tool_name", ""))
         tool_args = tool_call.get("args", {})
         logger.info("SaaS requested tool execution%s: %s", log_context, tool_name)
+
+        if tool_name not in allowed_tool_names:
+            logger.warning(
+                "Rejected tool outside request authorization snapshot%s: %s",
+                log_context,
+                tool_name,
+            )
+            result_str = json.dumps({"error": "Tool is not authorized for this analysis request"})
+            return {"tool_call_id": tool_call_id, "data": result_str}, tool_name
 
         try:
             args_str = json.dumps(tool_args) if isinstance(tool_args, dict) else tool_args
@@ -216,6 +244,7 @@ class SaaSWSClient:
                     await _send_ws_json(websocket, payload, "alert.start")
 
                     # 2. Loop to handle Server Events
+                    allowed_tool_names = _tool_names_from_schema(tools_schema)
                     used_tools: set[str] = set()
                     failed_tools: set[str] = set()
                     while True:
@@ -241,10 +270,13 @@ class SaaSWSClient:
                             used_tools.update(
                                 str(tool.get("tool_name", ""))
                                 for tool in tools
-                                if tool.get("tool_name")
+                                if tool.get("tool_name") in allowed_tool_names
                             )
                             results, batch_failures = await _execute_tool_calls(
-                                tools, tool_executor, ""
+                                tools,
+                                tool_executor,
+                                "",
+                                allowed_tool_names,
                             )
                             failed_tools.update(batch_failures)
                             result_payload = {"event": "tools_result", "results": results}
@@ -336,6 +368,7 @@ class SaaSWSClient:
                     }
                     await _send_ws_json(websocket, payload, "followup.start")
 
+                    allowed_tool_names = _tool_names_from_schema(tools_schema)
                     used_tools: set[str] = set()
                     while True:
                         response = await _recv_ws_json(websocket, "followup.loop")
@@ -362,12 +395,13 @@ class SaaSWSClient:
                             used_tools.update(
                                 str(tool.get("tool_name", ""))
                                 for tool in tools
-                                if tool.get("tool_name")
+                                if tool.get("tool_name") in allowed_tool_names
                             )
                             results, batch_failures = await _execute_tool_calls(
                                 tools,
                                 call_tool,
                                 " (follow-up)",
+                                allowed_tool_names,
                                 on_tool_failure,
                             )
                             failed_tools.update(batch_failures)

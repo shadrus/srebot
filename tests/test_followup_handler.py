@@ -464,6 +464,7 @@ class TestHandleFollowupQuestionDirect:
             rca_text="",
             alert_data=[],
             allowed_servers=None,
+            incident_scoped=False,
             parent_incident_id=None,
             user_name=None,
         )
@@ -498,6 +499,7 @@ class TestHandleFollowupQuestionDirect:
             rca_text="",
             alert_data=[],
             allowed_servers=None,
+            incident_scoped=False,
             parent_incident_id=None,
             user_name=None,
         )

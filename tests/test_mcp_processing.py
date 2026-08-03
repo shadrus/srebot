@@ -5,6 +5,7 @@ from srebot.llm.ws_client import (
     _execute_tool_calls,
     _is_tool_error,
     _tool_failure_notice,
+    _tool_names_from_schema,
     _tools_used_notice,
     _trim_tool_result,
 )
@@ -142,6 +143,23 @@ def test_is_tool_error_recognizes_mcp_error_envelopes():
     assert _is_tool_error('{"items": []}') is False
 
 
+def test_tool_names_from_schema_returns_stable_exact_name_snapshot():
+    schema = [
+        {"type": "function", "function": {"name": "prod__query", "parameters": {}}},
+        {"type": "function", "function": {"name": "staging__query"}},
+        {"type": "function", "function": {"name": ""}},
+        {"type": "function", "function": "invalid"},
+    ]
+
+    snapshot = _tool_names_from_schema(schema)
+    schema.append({"type": "function", "function": {"name": "later__query"}})
+
+    assert snapshot == frozenset({"prod__query", "staging__query"})
+    assert _tool_names_from_schema(schema) == frozenset(
+        {"prod__query", "staging__query", "later__query"}
+    )
+
+
 async def test_execute_tool_calls_reports_failure_and_keeps_successful_results():
     async def executor(name: str, _arguments: str) -> str:
         if name == "unavailable-tool":
@@ -156,6 +174,7 @@ async def test_execute_tool_calls_reports_failure_and_keeps_successful_results()
         ],
         executor,
         " (test)",
+        frozenset({"available-tool", "unavailable-tool"}),
         callback,
     )
 
@@ -165,6 +184,35 @@ async def test_execute_tool_calls_reports_failure_and_keeps_successful_results()
     ]
     assert failed_tools == {"unavailable-tool"}
     callback.assert_awaited_once_with(["unavailable-tool"])
+
+
+async def test_execute_tool_calls_rejects_unadvertised_names_and_keeps_authorized_results():
+    executor = AsyncMock(return_value='{"items": [1]}')
+    callback = AsyncMock()
+
+    results, failed_tools = await _execute_tool_calls(
+        [
+            {"tool_call_id": "allowed-id", "tool_name": "prod__query", "args": {"q": 1}},
+            {
+                "tool_call_id": "blocked-id",
+                "tool_name": "staging__query",
+                "args": {"q": 2},
+            },
+        ],
+        executor,
+        " (test)",
+        frozenset({"prod__query"}),
+        callback,
+    )
+
+    assert results[0] == {"tool_call_id": "allowed-id", "data": '{"items": [1]}'}
+    assert results[1]["tool_call_id"] == "blocked-id"
+    assert json.loads(results[1]["data"]) == {
+        "error": "Tool is not authorized for this analysis request"
+    }
+    assert failed_tools == {"staging__query"}
+    executor.assert_awaited_once_with("prod__query", '{"q": 1}')
+    callback.assert_awaited_once_with(["staging__query"])
 
 
 def test_dynamic_tool_notices_use_markdown_instead_of_platform_html():
