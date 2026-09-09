@@ -17,6 +17,7 @@ import srebot.config as config
 import srebot.llm.agent as llm_agent
 import srebot.state.store as state_store
 from srebot.bot.delivery import DeliveryReceipt
+from srebot.messages import get_chat_message
 from srebot.parser.alert_parser import Alert, AlertStatus, parse_alert_message
 from srebot.parser.filtering import get_ignore_registry
 from srebot.state.store import (
@@ -219,9 +220,27 @@ async def execute_alert_group_workflow(
     elif dry_run:
         await store.mark_analyzing(group_fp, "0")
 
+    async def report_tool_failure(_failed_tools: list[str]) -> None:
+        if dry_run or placeholder_id is None:
+            return
+        progress = get_chat_message(
+            "mcp_failure_progress",
+            config.get_settings().llm_response_language,
+            "markdown",
+        )
+        await adapter.update_with_analysis(
+            group_fp,
+            placeholder_id,
+            progress,
+            is_billing_error=True,
+        )
+
     # Run LLM analysis
     try:
-        analysis, incident_id = await agent.analyze(alerts)
+        analysis, incident_id = await agent.analyze(
+            alerts,
+            on_tool_failure=report_tool_failure,
+        )
     except Exception as exc:
         logger.exception("LLM analysis failed for group %s", group_fp)
         analysis = f"⚠️ Analysis failed: {exc}\nPlease investigate manually."

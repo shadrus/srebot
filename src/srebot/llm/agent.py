@@ -22,9 +22,20 @@ class AlertAnalysisAgent:
         self._token = settings.saas_agent_token
         self._response_language = settings.llm_response_language
 
-    async def analyze(self, alerts: list[Alert]) -> tuple[str, str | None]:
+    async def analyze(
+        self,
+        alerts: list[Alert],
+        on_tool_failure: Callable[[list[str]], Awaitable[None]] | None = None,
+    ) -> tuple[str, str | None]:
         """
         Send a group of related alerts to the SaaS Backend for analysis.
+
+        Args:
+            alerts: Related alerts to analyze as one incident.
+            on_tool_failure: Optional callback invoked with failed MCP tool names.
+
+        Returns:
+            Tuple of (analysis text, incident ID).
         """
         if not self._token:
             return "⚠️ Cannot analyze: SAAS_AGENT_TOKEN is not configured.", None
@@ -69,6 +80,7 @@ class AlertAnalysisAgent:
             tools_schema=tools_schema,
             tool_executor=call_tool,
             response_language=self._response_language,
+            on_tool_failure=on_tool_failure,
         )
 
     async def followup(

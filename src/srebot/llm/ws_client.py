@@ -180,6 +180,7 @@ class SaaSWSClient:
         tools_schema: list[dict[str, Any]],
         tool_executor: Any,
         response_language: str = "English",
+        on_tool_failure: ToolFailureCallback | None = None,
     ) -> tuple[str, str | None]:
         settings = get_settings()
         timeout = settings.alert_analysis_timeout
@@ -244,7 +245,7 @@ class SaaSWSClient:
                                 if tool.get("tool_name")
                             )
                             results, batch_failures = await _execute_tool_calls(
-                                tools, tool_executor, ""
+                                tools, tool_executor, "", on_tool_failure
                             )
                             failed_tools.update(batch_failures)
                             result_payload = {"event": "tools_result", "results": results}

@@ -25,5 +25,7 @@ async def test_agent_soft_correction_delegated(mocker):
         severity="critical",
         source_url="",
     )
-    await agent.analyze([alert])
+    on_tool_failure = AsyncMock()
+    await agent.analyze([alert], on_tool_failure=on_tool_failure)
     mock_ws.return_value.analyze_alert.assert_called_once()
+    assert mock_ws.return_value.analyze_alert.call_args.kwargs["on_tool_failure"] is on_tool_failure

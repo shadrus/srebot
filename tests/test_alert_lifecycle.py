@@ -84,7 +84,7 @@ async def test_concurrent_resolution_during_analysis(mock_store, mock_agent, moc
     # Slow analysis to allow concurrent resolution
     analyze_event = asyncio.Event()
 
-    async def slow_analyze(_):
+    async def slow_analyze(_, **_kwargs):
         await analyze_event.wait()
         return "<b>Full Analysis</b>", "uuid-123"
 

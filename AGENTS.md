@@ -182,3 +182,19 @@ When writing automated E2E/browser tests (using Playwright, Selenium, etc.), alw
 - Copy `.env.example` → `.env` and fill in real values (never commit `.env`)
 - Add clusters to `clusters.yml` — keys must exactly match the `cluster` label in Prometheus alerts
 - `ALERT_FINGERPRINT_TTL` controls how long a firing alert is deduplicated (default: 24 h)
+
+---
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in this repository's GitHub Issues. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Triage uses the five default canonical labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Domain documentation uses a single-context layout. See `docs/agents/domain.md`.

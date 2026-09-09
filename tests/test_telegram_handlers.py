@@ -215,6 +215,33 @@ class TestHandleAlertGroupFiring:
         edited_text = mock_message.get_bot().edit_message_text.call_args[1]["text"]
         assert "Analysis failed" in edited_text
 
+    async def test_mcp_failure_replaces_analyzing_placeholder(
+        self, mock_store, mock_agent, mock_message
+    ):
+        alert = _firing_alert()
+
+        async def analyze_with_tool_failure(_alerts, *, on_tool_failure):
+            await on_tool_failure(["unavailable-tool"])
+            return "Partial analysis", None
+
+        mock_agent.analyze = AsyncMock(side_effect=analyze_with_tool_failure)
+        with (
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.llm.agent.get_agent", return_value=mock_agent),
+            patch(
+                "srebot.config.get_settings",
+                return_value=MagicMock(
+                    dry_run=False,
+                    llm_response_language="English",
+                    followup_ttl=3600,
+                ),
+            ),
+        ):
+            await _handle_alert_group("fp123", [alert], mock_message)
+
+        first_update = mock_message.get_bot().edit_message_text.await_args_list[0]
+        assert "sources are unavailable" in first_update.kwargs["text"]
+
     async def test_edit_failure_falls_back_to_new_message(
         self, mock_store, mock_agent, mock_message
     ):
