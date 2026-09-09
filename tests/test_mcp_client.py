@@ -379,6 +379,35 @@ async def test_pool_shutdown_cancels_active_calls_and_rejects_waiters(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_pool_rejects_calls_started_after_shutdown(monkeypatch):
+    @asynccontextmanager
+    async def fake_sse_client(_url: str, **_kwargs):
+        yield object(), object()
+
+    class FakeSession:
+        def __init__(self, _read, _write):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            pass
+
+        async def initialize(self):
+            pass
+
+    monkeypatch.setattr("srebot.mcp.mcp_client.sse_client", fake_sse_client)
+    monkeypatch.setattr("srebot.mcp.mcp_client.ClientSession", FakeSession)
+    pool = ExternalMCPClientPool("http://mcp.example/sse")
+    await pool.connect()
+    await pool.close()
+
+    with pytest.raises(RuntimeError, match="pool is closed"):
+        await asyncio.wait_for(pool.call_tool("late", {}), timeout=0.1)
+
+
+@pytest.mark.asyncio
 async def test_transport_is_opened_used_and_closed_by_same_owner_task(monkeypatch):
     task_ids: dict[str, int] = {}
     transport_options: dict[str, object] = {}

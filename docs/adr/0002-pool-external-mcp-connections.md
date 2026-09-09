@@ -16,8 +16,10 @@ Tool calls borrow one member at a time from a FIFO pool and return it after the 
 operation actually finishes. A caller cancellation does not make a still-running client available.
 There is no analysis affinity, fairness reservation, acquisition timeout, or queue-size limit;
 the existing outer tool-execution timeout bounds each caller's total wait. The client's 55-second
-deadline covers the complete connect, reconnect, retry, and execution operation so it finishes
-before the outer 60-second timeout under normal operation.
+deadline covers connect, reconnect, retry, and tool execution so active MCP work finishes before
+the outer 60-second timeout under normal operation. Transport teardown still runs synchronously in
+the connection owner task and is not forcibly abandoned: if teardown itself stalls, the caller may
+reach its outer timeout while the pool correctly retains that member until cleanup completes.
 
 Runtime MCP outages do not terminate the bot or permanently remove members. Failed calls return
 tool errors, disconnected clients remain eligible for later borrowing, and they reconnect lazily on

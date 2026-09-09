@@ -360,6 +360,17 @@ class ExternalMCPClientPool:
     """Fixed-size pool of independent external MCP connections."""
 
     def __init__(self, url: str, transport: str = "sse", size: int = 1) -> None:
+        """
+        Initialize a pool without opening its connections.
+
+        Args:
+            url: External MCP endpoint URL shared by all pool members.
+            transport: MCP transport name, either ``sse`` or ``http``.
+            size: Number of independent connections in the pool.
+
+        Raises:
+            ValueError: If size is outside the supported range.
+        """
         if not 1 <= size <= 32:
             raise ValueError("MCP client pool size must be between 1 and 32")
 
@@ -401,17 +412,40 @@ class ExternalMCPClientPool:
             logger.info("Initialized MCP connection pool with %d members: %s", self.size, self.url)
 
     async def get_tools_as_openai_schema(self) -> list[dict]:
-        """Fetch tool schemas through one pool member."""
+        """
+        Fetch tool schemas through one pool member.
+
+        Returns:
+            OpenAI-compatible function tool schemas.
+        """
         return await self._run_with_client(lambda client: client.get_tools_as_openai_schema())
 
     async def call_tool(self, name: str, arguments: dict) -> str:
-        """Execute one tool call on the next available pool member."""
+        """
+        Execute one tool call on the next available pool member.
+
+        Args:
+            name: External MCP tool name.
+            arguments: Tool arguments.
+
+        Returns:
+            Tool text content or a serialized JSON error.
+        """
         return await self._run_with_client(lambda client: client.call_tool(name, arguments))
 
     async def _run_with_client[T](
         self,
         operation: Callable[[ExternalMCPClient], Awaitable[T]],
     ) -> T:
+        """
+        Run an operation while retaining the lease through caller cancellation.
+
+        Args:
+            operation: Async operation to execute with a borrowed client.
+
+        Returns:
+            Operation result.
+        """
         client = await self._borrow()
         task = asyncio.create_task(self._execute_and_return(client, operation))
         try:
@@ -421,10 +455,19 @@ class ExternalMCPClientPool:
             raise
 
     async def _borrow(self) -> ExternalMCPClient:
+        """
+        Wait for and remove the next available client.
+
+        Returns:
+            Borrowed client.
+
+        Raises:
+            RuntimeError: If the pool is closed or not connected.
+        """
         async with self._condition:
+            if self._closed:
+                raise RuntimeError("MCP client pool is closed")
             if not self._connected:
-                if self._closed:
-                    raise RuntimeError("MCP client pool is closed")
                 raise RuntimeError("MCP client pool is not connected")
 
             while not self._available:
@@ -447,6 +490,16 @@ class ExternalMCPClientPool:
         client: ExternalMCPClient,
         operation: Callable[[ExternalMCPClient], Awaitable[T]],
     ) -> T:
+        """
+        Execute an operation and return its client after actual completion.
+
+        Args:
+            client: Borrowed pool member.
+            operation: Async operation to execute.
+
+        Returns:
+            Operation result.
+        """
         try:
             return await operation(client)
         finally:
@@ -463,6 +516,12 @@ class ExternalMCPClientPool:
 
     @staticmethod
     def _consume_background_result(task: asyncio.Task[Any]) -> None:
+        """
+        Retrieve the result of an operation orphaned by caller cancellation.
+
+        Args:
+            task: Completed background operation task.
+        """
         try:
             task.exception()
         except asyncio.CancelledError:
