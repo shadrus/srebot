@@ -220,7 +220,7 @@ class TestHandleAlertGroupFiring:
     ):
         alert = _firing_alert()
 
-        async def analyze_with_tool_failure(_alerts, *, on_tool_failure):
+        async def analyze_with_tool_failure(_alerts, *, on_tool_failure, on_progress):
             await on_tool_failure(["unavailable-tool"])
             return "Partial analysis", None
 

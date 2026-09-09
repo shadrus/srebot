@@ -251,6 +251,7 @@ class TestSlackHandlers:
             chat_id="slack:C_SLACK",
             user_display_name="Yury",
             on_tool_failure=ANY,
+            on_progress=ANY,
         )
         client.chat_update.assert_called_once_with(
             channel="C_SLACK",
@@ -338,6 +339,7 @@ class TestSlackHandlers:
             chat_id="slack:C_SLACK",
             user_display_name="Yury",
             on_tool_failure=ANY,
+            on_progress=ANY,
         )
         mock_store.register_bot_message.assert_has_awaits(
             [
@@ -623,6 +625,7 @@ class TestDiscordHandlers:
             chat_id="discord:9999",
             user_display_name="Yury",
             on_tool_failure=ANY,
+            on_progress=ANY,
         )
         indicator.edit.assert_called_once_with(content="Memory is normal")
         mock_store.register_bot_message.assert_called_once_with(

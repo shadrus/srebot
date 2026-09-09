@@ -17,6 +17,7 @@ from srebot.bot.delivery import (
 from srebot.bot.shared import (
     ChatAdapter,
     RejectionReason,
+    create_progress_publisher,
     handle_followup_question,
     process_alert_text,
     register_followup_receipt,
@@ -94,9 +95,10 @@ async def _deliver_markdown(
 
 
 class TelegramChatAdapter(ChatAdapter):
-    def __init__(self, source_msg: Message, dry_run: bool):
+    def __init__(self, source_msg: Message, dry_run: bool, progress_message: Message | None = None):
         self.source_msg = source_msg
         self.dry_run = dry_run
+        self.progress_message = progress_message
 
     def get_chat_id(self) -> str:
         return f"telegram:{self.source_msg.chat_id}"
@@ -184,6 +186,22 @@ class TelegramChatAdapter(ChatAdapter):
             self.source_msg,
             analysis,
             placeholder_id=placeholder_id,
+        )
+
+    async def update_progress(self, placeholder_id: str | int | None, progress: str) -> None:
+        if self.dry_run or placeholder_id is None:
+            return
+        if self.progress_message is not None:
+            await self.progress_message.edit_text(
+                markdown_to_telegram_html(progress),
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        await self.source_msg.get_bot().edit_message_text(
+            chat_id=self.source_msg.chat_id,
+            message_id=placeholder_id,
+            text=markdown_to_telegram_html(progress),
+            parse_mode=ParseMode.HTML,
         )
 
 
@@ -332,21 +350,23 @@ async def followup_reply_handler(update: Update, context: ContextTypes.DEFAULT_T
                 logger.warning("Could not delete follow-up indicator: %s", exc)
         return
 
-    async def report_tool_failure(_failed_tools: list[str]) -> None:
-        if indicator:
-            await indicator.edit_text(
-                get_msg("mcp_failure_progress"),
-                parse_mode=ParseMode.HTML,
-            )
-
-    answer, new_incident_id, fp_used, rejection = await handle_followup_question(
-        reply_to_id=reply_to_id,
-        question=cleaned_question,
-        user_id=user_id,
-        chat_id=chat_id,
-        user_display_name=user_display_name,
-        on_tool_failure=report_tool_failure,
+    progress_publisher = create_progress_publisher(
+        TelegramChatAdapter(msg, dry_run, progress_message=indicator),
+        indicator.message_id if indicator else None,
+        config.get_settings().llm_response_language,
     )
+    try:
+        answer, new_incident_id, fp_used, rejection = await handle_followup_question(
+            reply_to_id=reply_to_id,
+            question=cleaned_question,
+            user_id=user_id,
+            chat_id=chat_id,
+            user_display_name=user_display_name,
+            on_tool_failure=progress_publisher.report_tool_failure,
+            on_progress=progress_publisher.publish,
+        )
+    finally:
+        await progress_publisher.close()
 
     if rejection is not None:
         if rejection == RejectionReason.NO_CONTEXT:

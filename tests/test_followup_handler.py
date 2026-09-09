@@ -392,6 +392,24 @@ class TestFollowupReplyHandler:
 
 
 class TestHandleFollowupQuestionDirect:
+    async def test_progress_callback_is_forwarded_to_agent(
+        self, mock_store, mock_agent, mock_settings
+    ):
+        progress = AsyncMock()
+        with (
+            patch("srebot.state.store.get_store", AsyncMock(return_value=mock_store)),
+            patch("srebot.llm.agent.get_agent", return_value=mock_agent),
+            patch("srebot.config.get_settings", return_value=mock_settings),
+        ):
+            await handle_followup_question(
+                reply_to_id=None,
+                question="Что происходит?",
+                user_id="777",
+                on_progress=progress,
+            )
+
+        assert mock_agent.followup.await_args.kwargs["on_progress"] is progress
+
     async def test_agent_failure_returns_user_facing_message(
         self, mock_store, mock_agent, mock_settings
     ):

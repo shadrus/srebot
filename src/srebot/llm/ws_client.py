@@ -9,12 +9,24 @@ from websockets.asyncio.client import connect
 from srebot.config import get_settings
 from srebot.messages import get_chat_message
 from srebot.parser.alert_parser import update_remote_strategies
+from srebot.progress import ProgressEvent, ProgressPhase
 
 logger = logging.getLogger(__name__)
 
 _MAX_TOOL_RESULT_CHARS = 8000
 
 ToolFailureCallback = Callable[[list[str]], Awaitable[None]]
+ProgressCallback = Callable[[ProgressEvent], Awaitable[None]]
+
+
+async def _publish_progress(callback: ProgressCallback | None, event: ProgressEvent) -> None:
+    """Publish progress without allowing delivery failures to stop analysis."""
+    if callback is None:
+        return
+    try:
+        await callback(event)
+    except Exception:
+        logger.warning("Could not publish analysis progress update", exc_info=True)
 
 
 def _trim_tool_result(result: str, max_chars: int = _MAX_TOOL_RESULT_CHARS) -> str:
@@ -181,6 +193,7 @@ class SaaSWSClient:
         tool_executor: Any,
         response_language: str = "English",
         on_tool_failure: ToolFailureCallback | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> tuple[str, str | None]:
         settings = get_settings()
         timeout = settings.alert_analysis_timeout
@@ -238,6 +251,14 @@ class SaaSWSClient:
 
                         elif event == "execute_tools":
                             tools = response.get("tools", [])
+                            public_status = response.get("progress_text")
+                            await _publish_progress(
+                                on_progress,
+                                ProgressEvent(
+                                    ProgressPhase.TOOL_EXECUTION,
+                                    public_status if isinstance(public_status, str) else None,
+                                ),
+                            )
 
                             used_tools.update(
                                 str(tool.get("tool_name", ""))
@@ -248,6 +269,15 @@ class SaaSWSClient:
                                 tools, tool_executor, "", on_tool_failure
                             )
                             failed_tools.update(batch_failures)
+                            progress_phase = (
+                                ProgressPhase.PARTIAL_RESULTS
+                                if batch_failures
+                                else ProgressPhase.ANALYZING_RESULTS
+                            )
+                            await _publish_progress(
+                                on_progress,
+                                ProgressEvent(progress_phase),
+                            )
                             result_payload = {"event": "tools_result", "results": results}
                             await _send_ws_json(websocket, result_payload, "alert.tools")
 
@@ -284,6 +314,7 @@ class SaaSWSClient:
         response_language: str = "English",
         user_name: str | None = None,
         on_tool_failure: ToolFailureCallback | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> tuple[str, str | None]:
         """
         Send a follow-up question to the SaaS Control Plane with RCA context.
@@ -357,6 +388,14 @@ class SaaSWSClient:
 
                         elif event == "execute_tools":
                             tools = response.get("tools", [])
+                            public_status = response.get("progress_text")
+                            await _publish_progress(
+                                on_progress,
+                                ProgressEvent(
+                                    ProgressPhase.TOOL_EXECUTION,
+                                    public_status if isinstance(public_status, str) else None,
+                                ),
+                            )
 
                             from srebot.mcp.registry import call_tool
 
@@ -372,6 +411,15 @@ class SaaSWSClient:
                                 on_tool_failure,
                             )
                             failed_tools.update(batch_failures)
+                            progress_phase = (
+                                ProgressPhase.PARTIAL_RESULTS
+                                if batch_failures
+                                else ProgressPhase.ANALYZING_RESULTS
+                            )
+                            await _publish_progress(
+                                on_progress,
+                                ProgressEvent(progress_phase),
+                            )
                             result_payload = {"event": "tools_result", "results": results}
                             await _send_ws_json(websocket, result_payload, "followup.tools")
 

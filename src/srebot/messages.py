@@ -6,12 +6,14 @@ MessageFormat = Literal["markdown", "telegram", "slack", "discord", "time"]
 
 _MESSAGES = {
     "Russian": {
-        "analyzing_alerts": "🔍 [bold]Анализирую {count} алерт(ов)…[/bold]",
+        "analyzing_alerts": "⏳ [italic]Анализирую запрос…[/italic]",
         "ttl_footer": (
             "\n\n[italic]💬 Задайте уточняющие вопросы ответом на это сообщение "
             "в течение {hours} ч.[/italic]"
         ),
-        "analyzing_followup": "🔍 [italic]Анализирую...[/italic]",
+        "analyzing_followup": "⏳ [italic]Анализирую запрос…[/italic]",
+        "progress_additional_data": "⏳ [italic]Получаю дополнительные данные…[/italic]",
+        "progress_analyzing_results": "⏳ [italic]Анализирую результаты…[/italic]",
         "mcp_failure_progress": (
             "⚠️ [italic]Часть источников данных недоступна. "
             "Продолжаю анализ по доступным данным...[/italic]"
@@ -37,12 +39,14 @@ _MESSAGES = {
         ),
     },
     "English": {
-        "analyzing_alerts": "🔍 [bold]Analyzing {count} alert(s)…[/bold]",
+        "analyzing_alerts": "⏳ [italic]Analyzing request…[/italic]",
         "ttl_footer": (
             "\n\n[italic]💬 Ask follow-up questions by replying to this message "
             "within {hours} h.[/italic]"
         ),
-        "analyzing_followup": "🔍 [italic]Analyzing...[/italic]",
+        "analyzing_followup": "⏳ [italic]Analyzing request…[/italic]",
+        "progress_additional_data": "⏳ [italic]Retrieving additional data…[/italic]",
+        "progress_analyzing_results": "⏳ [italic]Analyzing results…[/italic]",
         "mcp_failure_progress": (
             "⚠️ [italic]Some data sources are unavailable. "
             "Continuing with available data...[/italic]"

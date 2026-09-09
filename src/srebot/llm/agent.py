@@ -7,6 +7,7 @@ from srebot.config import get_mcp_registry, get_settings
 from srebot.llm.ws_client import SaaSWSClient
 from srebot.mcp.registry import call_tool, get_tools_schema
 from srebot.parser.alert_parser import Alert
+from srebot.progress import ProgressEvent
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ class AlertAnalysisAgent:
         self,
         alerts: list[Alert],
         on_tool_failure: Callable[[list[str]], Awaitable[None]] | None = None,
+        on_progress: Callable[[ProgressEvent], Awaitable[None]] | None = None,
     ) -> tuple[str, str | None]:
         """
         Send a group of related alerts to the SaaS Backend for analysis.
@@ -81,6 +83,7 @@ class AlertAnalysisAgent:
             tool_executor=call_tool,
             response_language=self._response_language,
             on_tool_failure=on_tool_failure,
+            on_progress=on_progress,
         )
 
     async def followup(
@@ -92,6 +95,7 @@ class AlertAnalysisAgent:
         parent_incident_id: str | None = None,
         user_name: str | None = None,
         on_tool_failure: Callable[[list[str]], Awaitable[None]] | None = None,
+        on_progress: Callable[[ProgressEvent], Awaitable[None]] | None = None,
     ) -> tuple[str, str | None]:
         """
         Send a follow-up question to the SaaS backend with previous RCA as context.
@@ -124,6 +128,7 @@ class AlertAnalysisAgent:
             response_language=self._response_language,
             user_name=user_name,
             on_tool_failure=on_tool_failure,
+            on_progress=on_progress,
         )
 
     async def parse_raw_text(self, text: str) -> list[Alert]:

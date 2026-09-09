@@ -17,9 +17,10 @@ import srebot.config as config
 import srebot.llm.agent as llm_agent
 import srebot.state.store as state_store
 from srebot.bot.delivery import DeliveryReceipt
-from srebot.messages import get_chat_message
+from srebot.bot.progress import ProgressPublisher
 from srebot.parser.alert_parser import Alert, AlertStatus, parse_alert_message
 from srebot.parser.filtering import get_ignore_registry
+from srebot.progress import ProgressEvent
 from srebot.state.store import (
     FollowupAdmission,
     conversation_identity,
@@ -69,6 +70,11 @@ class ChatAdapter(ABC):
         pass
 
     @abstractmethod
+    async def update_progress(self, placeholder_id: str | int | None, progress: str) -> None:
+        """Edit an existing placeholder with best-effort progress."""
+        pass
+
+    @abstractmethod
     async def update_with_analysis(
         self,
         group_fp: str,
@@ -83,6 +89,26 @@ class ChatAdapter(ABC):
     def get_chat_id(self) -> str:
         """Returns the chat ID associated with this adapter for state tracking."""
         pass
+
+
+def create_progress_publisher(
+    adapter: ChatAdapter, placeholder_id: str | int | None, language: str
+) -> ProgressPublisher:
+    """Create a publisher that edits one adapter placeholder.
+
+    Args:
+        adapter: Platform-specific chat adapter.
+        placeholder_id: Existing progress message identifier.
+        language: Configured response language.
+
+    Returns:
+        Publisher bound to the existing placeholder.
+    """
+
+    async def update(progress: str) -> None:
+        await adapter.update_progress(placeholder_id, progress)
+
+    return ProgressPublisher(update, language)
 
 
 async def register_followup_receipt(
@@ -220,31 +246,25 @@ async def execute_alert_group_workflow(
     elif dry_run:
         await store.mark_analyzing(group_fp, "0")
 
-    async def report_tool_failure(_failed_tools: list[str]) -> None:
-        if dry_run or placeholder_id is None:
-            return
-        progress = get_chat_message(
-            "mcp_failure_progress",
-            config.get_settings().llm_response_language,
-            "markdown",
-        )
-        await adapter.update_with_analysis(
-            group_fp,
-            placeholder_id,
-            progress,
-            is_billing_error=True,
-        )
+    progress_publisher = create_progress_publisher(
+        adapter,
+        placeholder_id,
+        config.get_settings().llm_response_language,
+    )
 
     # Run LLM analysis
     try:
         analysis, incident_id = await agent.analyze(
             alerts,
-            on_tool_failure=report_tool_failure,
+            on_tool_failure=progress_publisher.report_tool_failure,
+            on_progress=progress_publisher.publish,
         )
     except Exception as exc:
         logger.exception("LLM analysis failed for group %s", group_fp)
         analysis = f"⚠️ Analysis failed: {exc}\nPlease investigate manually."
         incident_id = None
+    finally:
+        await progress_publisher.close()
 
     is_billing_error = (
         "insufficient balance" in analysis.lower() or "недостаточно баланса" in analysis.lower()
@@ -368,6 +388,7 @@ async def handle_followup_question(
     allowed_servers: list[str] | None = None,
     user_display_name: str | None = None,
     on_tool_failure: Callable[[list[str]], Awaitable[None]] | None = None,
+    on_progress: Callable[[ProgressEvent], Awaitable[None]] | None = None,
 ) -> tuple[str, str | None, str | None, RejectionReason | None]:
     """
     Common follow-up processing pipeline shared by all platform integrations.
@@ -382,6 +403,7 @@ async def handle_followup_question(
         chat_id: The chat identifier (to resolve active incident context for mentions).
         allowed_servers: MCP server names allowed for this cluster (passed to agent).
         on_tool_failure: Optional callback invoked when MCP data sources fail.
+        on_progress: Optional callback invoked for confirmed analysis progress.
 
     Returns:
         Tuple of (answer, new_incident_id, fingerprint_used, rejection_reason).
@@ -454,6 +476,8 @@ async def handle_followup_question(
         }
         if on_tool_failure:
             followup_kwargs["on_tool_failure"] = on_tool_failure
+        if on_progress:
+            followup_kwargs["on_progress"] = on_progress
         answer, new_incident_id = await agent.followup(**followup_kwargs)
     except Exception:
         logger.exception("Unhandled failure during follow-up analysis")

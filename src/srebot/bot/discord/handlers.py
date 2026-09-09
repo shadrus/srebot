@@ -15,6 +15,7 @@ from srebot.bot.delivery import (
 )
 from srebot.bot.shared import (
     ChatAdapter,
+    create_progress_publisher,
     process_alert_text,
     register_followup_receipt,
     rejection_turn_limit,
@@ -85,9 +86,15 @@ async def _reply_targets_bot(message: discord.Message, bot: commands.Bot) -> boo
 
 
 class DiscordChatAdapter(ChatAdapter):
-    def __init__(self, message: discord.Message, dry_run: bool):
+    def __init__(
+        self,
+        message: discord.Message,
+        dry_run: bool,
+        progress_message: discord.Message | None = None,
+    ):
         self.message = message
         self.dry_run = dry_run
+        self.progress_message = progress_message
 
     def get_chat_id(self) -> str:
         return f"discord:{self.message.channel.id}"
@@ -188,6 +195,15 @@ class DiscordChatAdapter(ChatAdapter):
 
         # Fallback to replying
         return await _deliver_reply(self.message, analysis)
+
+    async def update_progress(self, placeholder_id: str | int | None, progress: str) -> None:
+        if self.dry_run or placeholder_id is None:
+            return
+        if self.progress_message is not None:
+            await self.progress_message.edit(content=progress)
+            return
+        placeholder = await self.message.channel.fetch_message(int(placeholder_id))
+        await placeholder.edit(content=progress)
 
 
 async def _handle_alert_group(
@@ -301,18 +317,23 @@ def register_handlers(bot: commands.Bot, settings: Settings) -> None:
                         logger.warning("Could not delete Discord follow-up indicator: %s", exc)
                 return
 
-            async def report_tool_failure(_failed_tools: list[str]) -> None:
-                if indicator and not settings.dry_run:
-                    await indicator.edit(content=get_msg("mcp_failure_progress"))
-
-            answer, new_incident_id, fp_used, rejection = await handle_followup_question(
-                reply_to_id=reply_to_id,
-                question=cleaned_text,
-                user_id=user_id,
-                chat_id=chat_id,
-                user_display_name=user_display_name,
-                on_tool_failure=report_tool_failure,
+            progress_publisher = create_progress_publisher(
+                DiscordChatAdapter(message, settings.dry_run, progress_message=indicator),
+                indicator.id if indicator else None,
+                settings.llm_response_language,
             )
+            try:
+                answer, new_incident_id, fp_used, rejection = await handle_followup_question(
+                    reply_to_id=reply_to_id,
+                    question=cleaned_text,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    user_display_name=user_display_name,
+                    on_tool_failure=progress_publisher.report_tool_failure,
+                    on_progress=progress_publisher.publish,
+                )
+            finally:
+                await progress_publisher.close()
 
             if rejection is None:
                 # Successful follow-up

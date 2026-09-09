@@ -282,6 +282,48 @@ async def test_all_analyzing_placeholders_paginate_oversized_alert_fields():
     assert all(len(call.kwargs["text"]) <= 120 for call in time_client.send_message.await_args_list)
 
 
+async def test_all_chat_adapters_edit_progress_without_sending_new_messages():
+    telegram_message = MagicMock(chat_id=-100)
+    telegram_bot = MagicMock()
+    telegram_bot.edit_message_text = AsyncMock()
+    telegram_message.get_bot.return_value = telegram_bot
+    telegram_message.reply_text = AsyncMock()
+    await TelegramChatAdapter(telegram_message, dry_run=False).update_progress(
+        99, "⏳ *Checking metrics…*"
+    )
+    telegram_bot.edit_message_text.assert_awaited_once()
+    telegram_message.reply_text.assert_not_awaited()
+
+    slack_client = MagicMock()
+    slack_client.chat_update = AsyncMock()
+    slack_client.chat_postMessage = AsyncMock()
+    await SlackChatAdapter("C1", slack_client, dry_run=False).update_progress(
+        "123.4", "⏳ *Checking metrics…*"
+    )
+    slack_client.chat_update.assert_awaited_once()
+    slack_client.chat_postMessage.assert_not_awaited()
+
+    discord_placeholder = MagicMock()
+    discord_placeholder.edit = AsyncMock()
+    discord_message = MagicMock()
+    discord_message.channel.id = 1
+    discord_message.channel.fetch_message = AsyncMock(return_value=discord_placeholder)
+    discord_message.reply = AsyncMock()
+    await DiscordChatAdapter(discord_message, dry_run=False).update_progress(
+        "77", "⏳ *Checking metrics…*"
+    )
+    discord_placeholder.edit.assert_awaited_once()
+    discord_message.reply.assert_not_awaited()
+
+    time_event = MagicMock()
+    time_client = MagicMock()
+    with patch("srebot.bot.time.handlers._edit_post", new=AsyncMock()) as edit_time:
+        await TimeChatAdapter(time_event, time_client, dry_run=False).update_progress(
+            "post-1", "⏳ *Checking metrics…*"
+        )
+    edit_time.assert_awaited_once_with(time_client, "post-1", "⏳ *Checking metrics…*")
+
+
 async def test_time_delivery_uses_runtime_limit_and_threads_continuations():
     event = MagicMock()
     event.post.channel_id = "C1"
@@ -519,6 +561,54 @@ async def test_shared_workflow_registers_all_ids_from_complete_or_partial_receip
         (("two", "fp1"), {"incident_id": "incident-1"}),
     ]
     store.mark_firing.assert_awaited_once_with("fp1", "one")
+
+
+async def test_shared_alert_workflow_updates_placeholder_with_live_progress():
+    from srebot.bot.shared import execute_alert_group_workflow
+    from srebot.parser.alert_parser import Alert, AlertStatus
+    from srebot.progress import ProgressEvent, ProgressPhase
+
+    store = AsyncMock()
+    store.is_new.return_value = True
+    store.get_status.return_value = "analyzing"
+    agent = MagicMock()
+
+    async def analyze(_alerts, *, on_progress, on_tool_failure=None):
+        await on_progress(ProgressEvent(ProgressPhase.TOOL_EXECUTION, "Проверяю нагрузку"))
+        return "analysis", "incident-1"
+
+    agent.analyze = AsyncMock(side_effect=analyze)
+    adapter = MagicMock()
+    adapter.get_chat_id.return_value = "telegram:C1"
+    adapter.send_analyzing_placeholder = AsyncMock(
+        return_value=DeliveryReceipt.from_ids(("placeholder",), 1)
+    )
+    adapter.update_progress = AsyncMock()
+    adapter.update_with_analysis = AsyncMock(
+        return_value=DeliveryReceipt.from_ids(("placeholder",), 1)
+    )
+    alert = Alert(
+        status=AlertStatus.FIRING,
+        alertname="CPUHigh",
+        cluster="prod",
+        labels={"job": "api"},
+        fingerprint="fp1",
+    )
+    settings = MagicMock(
+        auto_analyze_alerts=True,
+        llm_response_language="Russian",
+        followup_ttl=43_200,
+    )
+
+    with (
+        patch("srebot.state.store.get_store", return_value=store),
+        patch("srebot.llm.agent.get_agent", return_value=agent),
+        patch("srebot.config.get_settings", return_value=settings),
+    ):
+        await execute_alert_group_workflow("fp1", [alert], adapter, dry_run=False)
+
+    adapter.update_progress.assert_awaited_once_with("placeholder", "⏳ *Проверяю нагрузку…*")
+    adapter.update_with_analysis.assert_awaited_once()
 
 
 async def test_shared_short_notification_registers_every_partial_receipt_id():

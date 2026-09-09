@@ -17,6 +17,7 @@ from srebot.bot.delivery import (
 )
 from srebot.bot.shared import (
     ChatAdapter,
+    create_progress_publisher,
     process_alert_text,
     register_followup_receipt,
     rejection_turn_limit,
@@ -245,6 +246,15 @@ class SlackChatAdapter(ChatAdapter):
             placeholder_ts=str(placeholder_id) if placeholder_id is not None else None,
         )
 
+    async def update_progress(self, placeholder_id: str | int | None, progress: str) -> None:
+        if self.dry_run or placeholder_id is None:
+            return
+        await self.client.chat_update(
+            channel=self.channel_id,
+            ts=str(placeholder_id),
+            text=_markdown_to_slack(progress),
+        )
+
 
 async def _handle_alert_group(
     group_fp: str,
@@ -438,22 +448,23 @@ def register_handlers(app: AsyncApp, settings: Settings) -> None:
                         logger.warning("Could not delete Slack follow-up indicator: %s", exc)
                 return
 
-            async def report_tool_failure(_failed_tools: list[str]) -> None:
-                if indicator_ts and not settings.dry_run:
-                    await client.chat_update(
-                        channel=channel_id,
-                        ts=indicator_ts,
-                        text=get_msg("mcp_failure_progress"),
-                    )
-
-            answer, new_incident_id, fp_used, rejection = await handle_followup_question(
-                reply_to_id=thread_ts if thread_has_context else None,
-                question=cleaned_text,
-                user_id=str(user_id),
-                chat_id=chat_id,
-                user_display_name=user_display_name,
-                on_tool_failure=report_tool_failure,
+            progress_publisher = create_progress_publisher(
+                SlackChatAdapter(channel_id, client, settings.dry_run),
+                indicator_ts,
+                settings.llm_response_language,
             )
+            try:
+                answer, new_incident_id, fp_used, rejection = await handle_followup_question(
+                    reply_to_id=thread_ts if thread_has_context else None,
+                    question=cleaned_text,
+                    user_id=str(user_id),
+                    chat_id=chat_id,
+                    user_display_name=user_display_name,
+                    on_tool_failure=progress_publisher.report_tool_failure,
+                    on_progress=progress_publisher.publish,
+                )
+            finally:
+                await progress_publisher.close()
 
             if rejection is None:
                 # Successful follow-up

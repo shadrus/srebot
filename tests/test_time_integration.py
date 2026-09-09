@@ -178,6 +178,7 @@ async def test_thread_followup_uses_root_incident_context():
         chat_id="time:channel-1",
         user_display_name="@engineer",
         on_tool_failure=ANY,
+        on_progress=ANY,
     )
     assert store.register_bot_message.await_args_list == [
         (("indicator-1", "group-fp"), {"incident_id": "incident-2"}),
@@ -267,6 +268,7 @@ async def test_direct_mention_starts_general_followup():
         chat_id="time:channel-1",
         user_display_name=None,
         on_tool_failure=ANY,
+        on_progress=ANY,
     )
     assert store.register_bot_message.await_args_list == [
         (("indicator-1", "general_query"), {"incident_id": "incident-general"}),
