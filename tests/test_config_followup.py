@@ -45,9 +45,18 @@ def test_env_example_ignores_empty_optional_and_integer_placeholders(monkeypatch
         {"followup_user_max_turns": 0},
         {"followup_incident_max_turns": 0},
         {"followup_ttl": 0},
-        {"followup_user_cooldown_sec": 0},
+        {"analysis_max_concurrency": 0},
+        {"analysis_max_concurrency": -1},
+        {"analysis_max_concurrency_per_user": 0},
+        {"analysis_max_concurrency_per_user": -1},
     ],
 )
 def test_followup_settings_must_be_positive(values):
-    with pytest.raises(ValidationError, match="must be positive"):
+    with pytest.raises(ValidationError):
         Settings(**values)
+
+
+def test_concurrency_defaults():
+    settings = Settings.model_construct()
+    assert settings.analysis_max_concurrency == 20
+    assert settings.analysis_max_concurrency_per_user == 3

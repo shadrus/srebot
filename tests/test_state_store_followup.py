@@ -39,7 +39,6 @@ def store(mock_redis):
 def mock_settings():
     s = MagicMock()
     s.followup_ttl = 3600
-    s.followup_user_cooldown_sec = 10
     s.followup_max_turns = 5
     s.followup_user_max_turns = None
     s.effective_followup_user_max_turns = 5
@@ -120,20 +119,12 @@ class TestBotMessageIndex:
 
 
 class TestAtomicFollowupContextUpdates:
-    async def test_incident_and_rca_updates_use_atomic_context_mutation(self, store, mock_redis):
+    async def test_rca_update_uses_atomic_context_mutation(self, store, mock_redis):
         mock_redis.eval.return_value = 1
 
-        await store.update_followup_context_incident_id("fp1", "incident-2")
         await store.update_followup_context_rca_text("fp1", "new rca")
 
         assert mock_redis.eval.await_args_list[0].args == (
-            _UPDATE_FOLLOWUP_CONTEXT_SCRIPT,
-            1,
-            "alert:followup:fp1",
-            "incident_id",
-            "incident-2",
-        )
-        assert mock_redis.eval.await_args_list[1].args == (
             _UPDATE_FOLLOWUP_CONTEXT_SCRIPT,
             1,
             "alert:followup:fp1",
@@ -172,10 +163,9 @@ class TestAtomicFollowupAdmission:
         ("result", "expected"),
         [
             (0, FollowupAdmission.ACCEPTED),
-            (1, FollowupAdmission.COOLDOWN),
-            (2, FollowupAdmission.USER_LIMIT),
-            (3, FollowupAdmission.INCIDENT_LIMIT),
-            (4, FollowupAdmission.NO_CONTEXT),
+            (1, FollowupAdmission.USER_LIMIT),
+            (2, FollowupAdmission.INCIDENT_LIMIT),
+            (3, FollowupAdmission.NO_CONTEXT),
         ],
     )
     async def test_maps_atomic_script_result(
@@ -194,21 +184,20 @@ class TestAtomicFollowupAdmission:
 
         assert admission is expected
         args = mock_redis.eval.await_args.args
-        assert args[1] == 3
-        assert args[2:5] == (
+        assert args[1] == 2
+        assert args[2:4] == (
             "alert:followup:fp1",
-            "followup:cooldown:telegram:-100:42",
             "followup:turns:user:fp1:telegram:-100:42",
         )
-        assert args[-4:] == (10, 5, 20, 3600)
+        assert args[4:] == (5, 20, 3600)
 
-    def test_script_reuses_legacy_total_counter_and_remaining_context_ttl(self):
+    def test_script_uses_quota_counters_and_remaining_context_ttl(self):
         assert "cjson.decode" in _ADMIT_FOLLOWUP_SCRIPT
         assert "context['turns']" in _ADMIT_FOLLOWUP_SCRIPT
         assert "PTTL', KEYS[1]" in _ADMIT_FOLLOWUP_SCRIPT
-        assert "PEXPIRE', KEYS[3], context_ttl_ms" in _ADMIT_FOLLOWUP_SCRIPT
+        assert "PEXPIRE', KEYS[2], context_ttl_ms" in _ADMIT_FOLLOWUP_SCRIPT
+        assert "followup:cooldown" not in _ADMIT_FOLLOWUP_SCRIPT
         assert "followup:turns:incident" not in _ADMIT_FOLLOWUP_SCRIPT
-        assert "EXPIRE', KEYS[3], ARGV[4]" not in _ADMIT_FOLLOWUP_SCRIPT
 
     async def test_new_user_limit_overrides_legacy(self, store, mock_redis, mock_settings):
         mock_settings.followup_user_max_turns = 7
@@ -220,12 +209,11 @@ class TestAtomicFollowupAdmission:
 
         assert mock_redis.eval.await_args.args[-3] == 7
 
-    async def test_malformed_context_wins_over_existing_cooldown(self, mock_settings):
+    async def test_malformed_context_returns_no_context(self, mock_settings):
         redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
         store = AlertStore(redis=redis, ttl=86400)
         identity = conversation_identity("slack:C1", "U1")
         await redis.set("alert:followup:fp1", "{malformed", ex=3600)
-        await redis.set(f"followup:cooldown:{identity.key}", "1", ex=10)
 
         with patch("srebot.state.store.get_settings", return_value=mock_settings):
             admission = await store.admit_followup("fp1", identity)
@@ -250,7 +238,6 @@ class TestAtomicFollowupAdmission:
         store = AlertStore(redis=redis, ttl=86400)
         identity = conversation_identity("slack:C1", "U1")
         context_key = "alert:followup:fp1"
-        cooldown_key = f"followup:cooldown:{identity.key}"
         user_turns_key = f"followup:turns:user:fp1:{identity.key}"
         await redis.set(context_key, json.dumps(context), ex=3600)
 
@@ -259,7 +246,7 @@ class TestAtomicFollowupAdmission:
 
         assert admission is FollowupAdmission.NO_CONTEXT
         assert json.loads(await redis.get(context_key)) == context
-        assert await redis.exists(cooldown_key, user_turns_key) == 0
+        assert await redis.exists(user_turns_key) == 0
         await redis.aclose()
 
     @pytest.mark.parametrize(
@@ -292,7 +279,6 @@ class TestAtomicFollowupAdmission:
         store = AlertStore(redis=redis, ttl=86400)
         identity = conversation_identity("slack:C1", "U1")
         context_key = "alert:followup:fp1"
-        cooldown_key = f"followup:cooldown:{identity.key}"
         user_turns_key = f"followup:turns:user:fp1:{identity.key}"
         await redis.set(context_key, raw_context, ex=3600)
 
@@ -301,21 +287,8 @@ class TestAtomicFollowupAdmission:
 
         assert admission is FollowupAdmission.NO_CONTEXT
         assert await redis.get(context_key) == raw_context
-        assert await redis.exists(cooldown_key, user_turns_key) == 0
+        assert await redis.exists(user_turns_key) == 0
         await redis.aclose()
-
-    async def test_scoped_general_query_cooldown(self, store, mock_redis, mock_settings):
-        identity = conversation_identity("discord:C1", "42")
-        with patch("srebot.state.store.get_settings", return_value=mock_settings):
-            in_cooldown = await store.check_and_set_scoped_cooldown(identity)
-
-        assert in_cooldown is False
-        mock_redis.set.assert_awaited_with(
-            "followup:cooldown:discord:C1:42",
-            "1",
-            ex=10,
-            nx=True,
-        )
 
     async def test_lua_concurrent_requests_cannot_exceed_final_incident_slot(
         self,
@@ -353,30 +326,26 @@ class TestAtomicFollowupAdmission:
         )
         common = (
             _ADMIT_FOLLOWUP_SCRIPT,
-            3,
+            2,
             "alert:followup:fp1",
         )
         results = await asyncio.gather(
             redis.eval(
                 *common,
-                "followup:cooldown:request-1",
                 "followup:turns:user:fp1:slack:C1:U1",
-                10,
                 1,
                 10,
                 3600,
             ),
             redis.eval(
                 *common,
-                "followup:cooldown:request-2",
                 "followup:turns:user:fp1:slack:C1:U1",
-                10,
                 1,
                 10,
                 3600,
             ),
         )
 
-        assert sorted(results) == [0, 2]
+        assert sorted(results) == [0, 1]
         assert await redis.get("followup:turns:user:fp1:slack:C1:U1") == "1"
         await redis.aclose()

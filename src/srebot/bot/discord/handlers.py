@@ -349,12 +349,9 @@ def register_handlers(bot: commands.Bot, settings: Settings) -> None:
                     logger.info("[DRY-RUN] Discord follow-up answer:\n%s", answer)
                 return
             elif rejection != RejectionReason.NO_CONTEXT:
-                # Cooldown or limit — send user-facing message
-                if rejection == RejectionReason.COOLDOWN:
-                    user_msg = get_msg("cooldown")
-                else:
-                    max_turns = rejection_turn_limit(settings, rejection)
-                    user_msg = get_msg("limit_reached").format(current=max_turns, max=max_turns)
+                # Turn quota exhausted — send user-facing message
+                max_turns = rejection_turn_limit(settings, rejection)
+                user_msg = get_msg("limit_reached").format(current=max_turns, max=max_turns)
 
                 if not settings.dry_run:
                     try:

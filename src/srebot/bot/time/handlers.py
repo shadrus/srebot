@@ -1,5 +1,6 @@
 """Time Messenger handlers backed by the shared alert and follow-up workflows."""
 
+import asyncio
 import logging
 import re
 from collections.abc import Mapping
@@ -30,6 +31,7 @@ from srebot.bot.shared import (
     rejection_turn_limit,
     run_followup_with_progress,
 )
+from srebot.bot.time.supervisor import TaskSupervisor
 from srebot.config import Settings
 from srebot.messages import get_chat_message
 from srebot.parser.alert_parser import Alert
@@ -37,6 +39,7 @@ from srebot.parser.alert_parser import Alert
 logger = logging.getLogger(__name__)
 
 TIME_MESSAGE_FALLBACK = 15_500
+_PLACEHOLDER_CLEANUP_TIMEOUT = 3.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,6 +343,21 @@ async def _finish_followup(
     )
 
 
+async def _cancel_followup_indicator(
+    client: TimeClient,
+    indicator_id: str | None,
+    dry_run: bool,
+) -> None:
+    """Best-effort bounded indicator update when a follow-up is cancelled."""
+    if indicator_id is None or dry_run:
+        return
+    try:
+        async with asyncio.timeout(_PLACEHOLDER_CLEANUP_TIMEOUT):
+            await asyncio.shield(_edit_post(client, indicator_id, get_msg("analysis_cancelled")))
+    except BaseException:
+        logger.debug("Could not update Time follow-up indicator after cancellation", exc_info=True)
+
+
 async def handle_posted_event(
     event: PostedEvent,
     client: TimeClient,
@@ -407,17 +425,21 @@ async def handle_posted_event(
                     logger.warning("Could not delete Time follow-up indicator: %s", exc)
             return Propagation.STOP
 
-        answer, new_incident_id, fp_used, rejection = await run_followup_with_progress(
-            handle_followup_question,
-            TimeChatAdapter(event, client, settings.dry_run),
-            indicator_id,
-            settings.llm_response_language,
-            reply_to_id=root_id if thread_has_context else None,
-            question=cleaned_text,
-            user_id=post.user_id,
-            chat_id=f"time:{post.channel_id}",
-            user_display_name=await _get_user_display_name(client, post.user_id),
-        )
+        try:
+            answer, new_incident_id, fp_used, rejection = await run_followup_with_progress(
+                handle_followup_question,
+                TimeChatAdapter(event, client, settings.dry_run),
+                indicator_id,
+                settings.llm_response_language,
+                reply_to_id=root_id if thread_has_context else None,
+                question=cleaned_text,
+                user_id=post.user_id,
+                chat_id=f"time:{post.channel_id}",
+                user_display_name=await _get_user_display_name(client, post.user_id),
+            )
+        except asyncio.CancelledError:
+            await _cancel_followup_indicator(client, indicator_id, settings.dry_run)
+            raise
 
         if rejection == RejectionReason.NO_CONTEXT:
             if indicator_id:
@@ -427,9 +449,7 @@ async def handle_posted_event(
                     logger.warning("Could not delete Time follow-up indicator: %s", exc)
             return Propagation.STOP
 
-        if rejection == RejectionReason.COOLDOWN:
-            answer = get_msg("cooldown")
-        elif rejection is not None:
+        if rejection is not None:
             max_turns = rejection_turn_limit(settings, rejection)
             answer = get_msg("limit_reached").format(current=max_turns, max=max_turns)
 
@@ -461,13 +481,20 @@ def register_handlers(
     settings: Settings,
     client: TimeClient,
     identity: TimeBotIdentity,
+    supervisor: TaskSupervisor,
 ) -> None:
     """Register the Time ``posted`` event handler on an aiotimebot router."""
 
     @router.on(EventType.POSTED)
     async def posted(event: PostedEvent, context: HandlerContext) -> Propagation:
-        try:
-            return await handle_posted_event(event, client, settings, identity)
-        except Exception:
-            logger.exception("Unhandled error while processing Time post %s", event.post.id)
-            raise
+        post = event.post
+        # Cheap synchronous filters only: aiotimebot serializes events of one
+        # channel until the handler returns, so slow work must run in a
+        # supervisor-owned background task (ADR-0004).
+        if post.channel_id != settings.time_channel_id or post.user_id == identity.user_id:
+            return Propagation.STOP
+        supervisor.spawn(
+            handle_posted_event(event, client, settings, identity),
+            name=f"time-post:{post.id}",
+        )
+        return Propagation.STOP

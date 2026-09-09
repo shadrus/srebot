@@ -41,7 +41,6 @@ def mock_store():
     store.save_followup_context = AsyncMock()
     store.register_bot_message = AsyncMock()
     store.get_fp_by_message_id = AsyncMock(return_value=None)
-    store.check_and_set_scoped_cooldown = AsyncMock(return_value=False)
     store.admit_followup = AsyncMock(return_value=FollowupAdmission.ACCEPTED)
     store.get_followup_context = AsyncMock(return_value=None)
     return store
@@ -262,7 +261,8 @@ class TestFollowupReplyHandler:
 
         async def followup_with_tool_failure(**kwargs):
             await kwargs["on_progress"](ProgressEvent(ProgressPhase.PARTIAL_RESULTS))
-            return "Partial answer", None, "fp123", None
+            # Real handler returns ``new_incident_id or parent_incident_id``.
+            return "Partial answer", "incident-parent", "fp123", None
 
         mock_store.get_followup_context.return_value = {
             "incident_id": "incident-parent",
@@ -303,23 +303,6 @@ class TestFollowupReplyHandler:
         # Should send indicator and then delete it
         update.message.reply_text.assert_called_once()
         indicator.delete.assert_called_once()
-
-    async def test_sends_cooldown_message(self, mock_settings, mock_context):
-        update = self._make_update()
-        indicator = update.message.reply_text.return_value
-        with (
-            patch(
-                "srebot.bot.telegram.handlers.handle_followup_question",
-                AsyncMock(return_value=("", None, None, RejectionReason.COOLDOWN)),
-            ),
-            patch("srebot.config.get_settings", return_value=mock_settings),
-        ):
-            await followup_reply_handler(update, mock_context)
-
-        update.message.reply_text.assert_called_once()
-        indicator.edit_text.assert_called_once()
-        text = indicator.edit_text.call_args[0][0]
-        assert "⏳" in text or "wait" in text
 
     async def test_sends_limit_message(self, mock_settings, mock_context):
         update = self._make_update()
@@ -455,7 +438,6 @@ class TestHandleFollowupQuestionDirect:
         assert rejection is RejectionReason.NO_CONTEXT
         assert answer == ""
         mock_store.admit_followup.assert_not_called()
-        mock_store.check_and_set_scoped_cooldown.assert_not_called()
         mock_agent.followup.assert_not_called()
 
     async def test_expired_context_on_mention_falls_back_to_general_query(
