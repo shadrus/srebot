@@ -10,6 +10,7 @@ class ProgressPhase(enum.StrEnum):
     TOOL_EXECUTION = "tool_execution"
     ANALYZING_RESULTS = "analyzing_results"
     PARTIAL_RESULTS = "partial_results"
+    UNAVAILABLE_RESULTS = "unavailable_results"
 
 
 @dataclass(frozen=True, slots=True)

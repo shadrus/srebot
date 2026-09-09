@@ -15,6 +15,7 @@ from srebot.bot.time.handlers import (
 from srebot.bot.time.integration import TimeBotIntegration
 from srebot.config import Settings
 from srebot.parser.alert_parser import Alert, AlertStatus
+from srebot.progress import ProgressEvent, ProgressPhase
 
 
 def _settings(**overrides) -> Settings:
@@ -177,7 +178,6 @@ async def test_thread_followup_uses_root_incident_context():
         user_id="user-1",
         chat_id="time:channel-1",
         user_display_name="@engineer",
-        on_tool_failure=ANY,
         on_progress=ANY,
     )
     assert store.register_bot_message.await_args_list == [
@@ -201,7 +201,7 @@ async def test_time_mcp_failure_updates_indicator():
     }
 
     async def followup_with_failure(**kwargs):
-        await kwargs["on_tool_failure"](["unavailable-tool"])
+        await kwargs["on_progress"](ProgressEvent(ProgressPhase.PARTIAL_RESULTS))
         return "Partial answer", None, "group-fp", None
 
     with (
@@ -267,7 +267,6 @@ async def test_direct_mention_starts_general_followup():
         user_id="user-1",
         chat_id="time:channel-1",
         user_display_name=None,
-        on_tool_failure=ANY,
         on_progress=ANY,
     )
     assert store.register_bot_message.await_args_list == [

@@ -4,6 +4,7 @@ import logging
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import override
 from urllib.parse import quote
 
 from aiotimebot import EventType, HandlerContext, PostedEvent, Propagation, Router, TimeClient
@@ -22,12 +23,12 @@ from srebot.bot.delivery import (
 from srebot.bot.shared import (
     ChatAdapter,
     RejectionReason,
-    create_progress_publisher,
     execute_alert_group_workflow,
     handle_followup_question,
     process_alert_text,
     register_followup_receipt,
     rejection_turn_limit,
+    run_followup_with_progress,
 )
 from srebot.config import Settings
 from srebot.messages import get_chat_message
@@ -278,6 +279,7 @@ class TimeChatAdapter(ChatAdapter):
             placeholder_id=str(placeholder_id) if placeholder_id is not None else None,
         )
 
+    @override
     async def update_progress(self, placeholder_id: str | int | None, progress: str) -> None:
         """Edit the existing placeholder without creating fallback posts."""
         if self.dry_run or placeholder_id is None:
@@ -405,23 +407,17 @@ async def handle_posted_event(
                     logger.warning("Could not delete Time follow-up indicator: %s", exc)
             return Propagation.STOP
 
-        progress_publisher = create_progress_publisher(
+        answer, new_incident_id, fp_used, rejection = await run_followup_with_progress(
+            handle_followup_question,
             TimeChatAdapter(event, client, settings.dry_run),
             indicator_id,
             settings.llm_response_language,
+            reply_to_id=root_id if thread_has_context else None,
+            question=cleaned_text,
+            user_id=post.user_id,
+            chat_id=f"time:{post.channel_id}",
+            user_display_name=await _get_user_display_name(client, post.user_id),
         )
-        try:
-            answer, new_incident_id, fp_used, rejection = await handle_followup_question(
-                reply_to_id=root_id if thread_has_context else None,
-                question=cleaned_text,
-                user_id=post.user_id,
-                chat_id=f"time:{post.channel_id}",
-                user_display_name=await _get_user_display_name(client, post.user_id),
-                on_tool_failure=progress_publisher.report_tool_failure,
-                on_progress=progress_publisher.publish,
-            )
-        finally:
-            await progress_publisher.close()
 
         if rejection == RejectionReason.NO_CONTEXT:
             if indicator_id:

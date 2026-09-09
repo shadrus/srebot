@@ -26,6 +26,7 @@ from srebot.bot.slack.handlers import (
     register_handlers as slack_register_handlers,
 )
 from srebot.parser.alert_parser import Alert, AlertStatus
+from srebot.progress import ProgressEvent, ProgressPhase
 
 
 def _firing_alert(alertname="CPUHigh", cluster="prod", job="api-server") -> Alert:
@@ -250,7 +251,6 @@ class TestSlackHandlers:
             user_id="U_USER",
             chat_id="slack:C_SLACK",
             user_display_name="Yury",
-            on_tool_failure=ANY,
             on_progress=ANY,
         )
         client.chat_update.assert_called_once_with(
@@ -274,7 +274,7 @@ class TestSlackHandlers:
         client.chat_postMessage.return_value = {"ts": "1111"}
 
         async def followup_with_failure(**kwargs):
-            await kwargs["on_tool_failure"](["unavailable-tool"])
+            await kwargs["on_progress"](ProgressEvent(ProgressPhase.PARTIAL_RESULTS))
             return "Partial answer", None, "general_query", None
 
         with (
@@ -338,7 +338,6 @@ class TestSlackHandlers:
             user_id="U_USER",
             chat_id="slack:C_SLACK",
             user_display_name="Yury",
-            on_tool_failure=ANY,
             on_progress=ANY,
         )
         mock_store.register_bot_message.assert_has_awaits(
@@ -624,7 +623,6 @@ class TestDiscordHandlers:
             user_id="777",
             chat_id="discord:9999",
             user_display_name="Yury",
-            on_tool_failure=ANY,
             on_progress=ANY,
         )
         indicator.edit.assert_called_once_with(content="Memory is normal")
@@ -652,7 +650,7 @@ class TestDiscordHandlers:
         message.reply.return_value = indicator
 
         async def followup_with_failure(**kwargs):
-            await kwargs["on_tool_failure"](["unavailable-tool"])
+            await kwargs["on_progress"](ProgressEvent(ProgressPhase.PARTIAL_RESULTS))
             return "Partial answer", None, "general_query", None
 
         with (

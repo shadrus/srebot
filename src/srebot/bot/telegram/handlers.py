@@ -1,6 +1,7 @@
 """Telegram bot integration handlers — processes channel messages and orchestrates analysis."""
 
 import logging
+from typing import override
 
 from telegram import Message, Update
 from telegram.constants import ParseMode
@@ -17,11 +18,11 @@ from srebot.bot.delivery import (
 from srebot.bot.shared import (
     ChatAdapter,
     RejectionReason,
-    create_progress_publisher,
     handle_followup_question,
     process_alert_text,
     register_followup_receipt,
     rejection_turn_limit,
+    run_followup_with_progress,
 )
 from srebot.bot.telegram.html_utils import markdown_to_telegram_html
 from srebot.messages import get_chat_message
@@ -188,6 +189,7 @@ class TelegramChatAdapter(ChatAdapter):
             placeholder_id=placeholder_id,
         )
 
+    @override
     async def update_progress(self, placeholder_id: str | int | None, progress: str) -> None:
         if self.dry_run or placeholder_id is None:
             return
@@ -350,23 +352,17 @@ async def followup_reply_handler(update: Update, context: ContextTypes.DEFAULT_T
                 logger.warning("Could not delete follow-up indicator: %s", exc)
         return
 
-    progress_publisher = create_progress_publisher(
+    answer, new_incident_id, fp_used, rejection = await run_followup_with_progress(
+        handle_followup_question,
         TelegramChatAdapter(msg, dry_run, progress_message=indicator),
         indicator.message_id if indicator else None,
         config.get_settings().llm_response_language,
+        reply_to_id=reply_to_id,
+        question=cleaned_question,
+        user_id=user_id,
+        chat_id=chat_id,
+        user_display_name=user_display_name,
     )
-    try:
-        answer, new_incident_id, fp_used, rejection = await handle_followup_question(
-            reply_to_id=reply_to_id,
-            question=cleaned_question,
-            user_id=user_id,
-            chat_id=chat_id,
-            user_display_name=user_display_name,
-            on_tool_failure=progress_publisher.report_tool_failure,
-            on_progress=progress_publisher.publish,
-        )
-    finally:
-        await progress_publisher.close()
 
     if rejection is not None:
         if rejection == RejectionReason.NO_CONTEXT:

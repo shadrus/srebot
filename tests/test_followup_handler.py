@@ -7,6 +7,7 @@ import pytest
 from srebot.bot.shared import RejectionReason, handle_followup_question
 from srebot.bot.telegram.handlers import _handle_alert_group, followup_reply_handler
 from srebot.parser.alert_parser import Alert, AlertStatus
+from srebot.progress import ProgressEvent, ProgressPhase
 from srebot.state.store import FollowupAdmission
 
 # ---------------------------------------------------------------------------
@@ -260,7 +261,7 @@ class TestFollowupReplyHandler:
         indicator = update.message.reply_text.return_value
 
         async def followup_with_tool_failure(**kwargs):
-            await kwargs["on_tool_failure"](["unavailable-tool"])
+            await kwargs["on_progress"](ProgressEvent(ProgressPhase.PARTIAL_RESULTS))
             return "Partial answer", None, "fp123", None
 
         mock_store.get_followup_context.return_value = {

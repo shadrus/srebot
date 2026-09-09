@@ -29,6 +29,16 @@ async def _publish_progress(callback: ProgressCallback | None, event: ProgressEv
         logger.warning("Could not publish analysis progress update", exc_info=True)
 
 
+def _result_progress_phase(results: list[dict[str, Any]]) -> ProgressPhase:
+    """Map one completed tool batch to its truthful public result phase."""
+    failed_count = sum(_is_tool_error(str(result.get("data", ""))) for result in results)
+    if results and failed_count == len(results):
+        return ProgressPhase.UNAVAILABLE_RESULTS
+    if failed_count:
+        return ProgressPhase.PARTIAL_RESULTS
+    return ProgressPhase.ANALYZING_RESULTS
+
+
 def _trim_tool_result(result: str, max_chars: int = _MAX_TOOL_RESULT_CHARS) -> str:
     """
     Limit tool output before sending it back over the SaaS WebSocket.
@@ -269,11 +279,7 @@ class SaaSWSClient:
                                 tools, tool_executor, "", on_tool_failure
                             )
                             failed_tools.update(batch_failures)
-                            progress_phase = (
-                                ProgressPhase.PARTIAL_RESULTS
-                                if batch_failures
-                                else ProgressPhase.ANALYZING_RESULTS
-                            )
+                            progress_phase = _result_progress_phase(results)
                             await _publish_progress(
                                 on_progress,
                                 ProgressEvent(progress_phase),
@@ -411,11 +417,7 @@ class SaaSWSClient:
                                 on_tool_failure,
                             )
                             failed_tools.update(batch_failures)
-                            progress_phase = (
-                                ProgressPhase.PARTIAL_RESULTS
-                                if batch_failures
-                                else ProgressPhase.ANALYZING_RESULTS
-                            )
+                            progress_phase = _result_progress_phase(results)
                             await _publish_progress(
                                 on_progress,
                                 ProgressEvent(progress_phase),

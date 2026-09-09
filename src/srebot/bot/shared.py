@@ -111,6 +111,35 @@ def create_progress_publisher(
     return ProgressPublisher(update, language)
 
 
+async def run_followup_with_progress(
+    handler: Callable[..., Awaitable[tuple[str, str | None, str | None, RejectionReason | None]]],
+    adapter: ChatAdapter,
+    placeholder_id: str | int | None,
+    language: str,
+    **followup_kwargs: object,
+) -> tuple[str, str | None, str | None, RejectionReason | None]:
+    """Run the shared follow-up handler with one managed progress publisher.
+
+    Args:
+        handler: Follow-up workflow callable.
+        adapter: Platform adapter owning the placeholder.
+        placeholder_id: Existing progress message identifier.
+        language: Configured response language.
+        **followup_kwargs: Arguments forwarded to the follow-up workflow.
+
+    Returns:
+        Follow-up workflow result.
+    """
+    publisher = create_progress_publisher(adapter, placeholder_id, language)
+    try:
+        return await handler(
+            **followup_kwargs,
+            on_progress=publisher.publish,
+        )
+    finally:
+        await publisher.close()
+
+
 async def register_followup_receipt(
     receipt: DeliveryReceipt,
     fingerprint: str | None,
@@ -256,7 +285,6 @@ async def execute_alert_group_workflow(
     try:
         analysis, incident_id = await agent.analyze(
             alerts,
-            on_tool_failure=progress_publisher.report_tool_failure,
             on_progress=progress_publisher.publish,
         )
     except Exception as exc:

@@ -35,6 +35,7 @@ class AlertAnalysisAgent:
         Args:
             alerts: Related alerts to analyze as one incident.
             on_tool_failure: Optional callback invoked with failed MCP tool names.
+            on_progress: Optional callback invoked for confirmed public progress events.
 
         Returns:
             Tuple of (analysis text, incident ID).
@@ -109,6 +110,7 @@ class AlertAnalysisAgent:
             parent_incident_id: ID of the parent incident.
             user_name: Username or display name of the user asking the question.
             on_tool_failure: Optional callback invoked with failed MCP tool names.
+            on_progress: Optional callback invoked for confirmed public progress events.
 
         Returns:
             Tuple of (answer, new_incident_id).

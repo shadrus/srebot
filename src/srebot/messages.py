@@ -15,8 +15,11 @@ _MESSAGES = {
         "progress_additional_data": "⏳ [italic]Получаю дополнительные данные…[/italic]",
         "progress_analyzing_results": "⏳ [italic]Анализирую результаты…[/italic]",
         "mcp_failure_progress": (
-            "⚠️ [italic]Часть источников данных недоступна. "
+            "⏳ [italic]Часть источников данных недоступна. "
             "Продолжаю анализ по доступным данным...[/italic]"
+        ),
+        "mcp_unavailable_progress": (
+            "⏳ [italic]Источники данных недоступны. Готовлю ответ без новых данных...[/italic]"
         ),
         "tools_used": "[bold]🛠 Использованные инструменты:[/bold] {tools}",
         "mcp_failure_result": (
@@ -48,8 +51,12 @@ _MESSAGES = {
         "progress_additional_data": "⏳ [italic]Retrieving additional data…[/italic]",
         "progress_analyzing_results": "⏳ [italic]Analyzing results…[/italic]",
         "mcp_failure_progress": (
-            "⚠️ [italic]Some data sources are unavailable. "
+            "⏳ [italic]Some data sources are unavailable. "
             "Continuing with available data...[/italic]"
+        ),
+        "mcp_unavailable_progress": (
+            "⏳ [italic]Data sources are unavailable. "
+            "Preparing the answer without new data...[/italic]"
         ),
         "tools_used": "[bold]🛠 Tools used:[/bold] {tools}",
         "mcp_failure_result": (

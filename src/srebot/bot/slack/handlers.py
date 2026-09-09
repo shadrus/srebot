@@ -2,6 +2,7 @@
 
 import logging
 import re
+from typing import override
 
 from slack_bolt.async_app import AsyncApp
 from slack_sdk.web.async_client import AsyncWebClient
@@ -17,10 +18,10 @@ from srebot.bot.delivery import (
 )
 from srebot.bot.shared import (
     ChatAdapter,
-    create_progress_publisher,
     process_alert_text,
     register_followup_receipt,
     rejection_turn_limit,
+    run_followup_with_progress,
 )
 from srebot.config import Settings
 from srebot.messages import get_chat_message
@@ -246,6 +247,7 @@ class SlackChatAdapter(ChatAdapter):
             placeholder_ts=str(placeholder_id) if placeholder_id is not None else None,
         )
 
+    @override
     async def update_progress(self, placeholder_id: str | int | None, progress: str) -> None:
         if self.dry_run or placeholder_id is None:
             return
@@ -448,23 +450,17 @@ def register_handlers(app: AsyncApp, settings: Settings) -> None:
                         logger.warning("Could not delete Slack follow-up indicator: %s", exc)
                 return
 
-            progress_publisher = create_progress_publisher(
+            answer, new_incident_id, fp_used, rejection = await run_followup_with_progress(
+                handle_followup_question,
                 SlackChatAdapter(channel_id, client, settings.dry_run),
                 indicator_ts,
                 settings.llm_response_language,
+                reply_to_id=thread_ts if thread_has_context else None,
+                question=cleaned_text,
+                user_id=str(user_id),
+                chat_id=chat_id,
+                user_display_name=user_display_name,
             )
-            try:
-                answer, new_incident_id, fp_used, rejection = await handle_followup_question(
-                    reply_to_id=thread_ts if thread_has_context else None,
-                    question=cleaned_text,
-                    user_id=str(user_id),
-                    chat_id=chat_id,
-                    user_display_name=user_display_name,
-                    on_tool_failure=progress_publisher.report_tool_failure,
-                    on_progress=progress_publisher.publish,
-                )
-            finally:
-                await progress_publisher.close()
 
             if rejection is None:
                 # Successful follow-up

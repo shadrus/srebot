@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import logging
 import re
 import time
 import unicodedata
@@ -11,7 +12,8 @@ from srebot.messages import get_chat_message
 from srebot.progress import ProgressEvent, ProgressPhase
 
 _MAX_PUBLIC_STATUS_LENGTH = 100
-_UNSAFE_PUBLIC_STATUS_RE = re.compile(r"https?://|www\.|[`<>]|\[[^\]]*\]\(", re.IGNORECASE)
+_UNSAFE_PUBLIC_STATUS_RE = re.compile(r"https?://|www\.|[`*_#<>\[\]~]", re.IGNORECASE)
+logger = logging.getLogger(__name__)
 
 
 def _safe_public_status(value: str | None) -> str | None:
@@ -43,6 +45,8 @@ def render_progress(event: ProgressEvent, language: str) -> str:
         key = "progress_additional_data"
     elif event.phase == ProgressPhase.PARTIAL_RESULTS:
         key = "mcp_failure_progress"
+    elif event.phase == ProgressPhase.UNAVAILABLE_RESULTS:
+        key = "mcp_unavailable_progress"
     else:
         key = "progress_analyzing_results"
     return get_chat_message(key, language, "markdown")
@@ -92,10 +96,6 @@ class ProgressPublisher:
         if immediate:
             await self._deliver(text)
 
-    async def report_tool_failure(self, _failed_tools: list[str]) -> None:
-        """Bridge the legacy tool-failure callback to progress events."""
-        await self.publish(ProgressEvent(ProgressPhase.PARTIAL_RESULTS))
-
     async def close(self) -> None:
         """Discard queued progress so it cannot overwrite a final response."""
         async with self._lock:
@@ -137,8 +137,4 @@ class ProgressPublisher:
         try:
             await self._update(text)
         except Exception:
-            import logging
-
-            logging.getLogger(__name__).warning(
-                "Could not update chat progress message", exc_info=True
-            )
+            logger.warning("Could not update chat progress message", exc_info=True)

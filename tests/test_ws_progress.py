@@ -45,3 +45,37 @@ async def test_alert_analysis_reports_tool_and_result_progress(mocker):
         ),
         mocker.call(ProgressEvent(ProgressPhase.ANALYZING_RESULTS)),
     ]
+
+
+async def test_alert_analysis_reports_total_tool_failure_without_claiming_partial_data(mocker):
+    websocket = AsyncMock()
+    websocket.recv.side_effect = [
+        json.dumps({"event": "update_strategies", "strategies": []}),
+        json.dumps(
+            {
+                "event": "execute_tools",
+                "tools": [
+                    {"tool_call_id": "call-1", "tool_name": "metrics__query", "args": {}},
+                    {"tool_call_id": "call-2", "tool_name": "metrics__query", "args": {}},
+                ],
+            }
+        ),
+        json.dumps({"event": "final_analysis", "text": "Готово", "incident_id": "inc-1"}),
+    ]
+    connection = MagicMock()
+    connection.__aenter__ = AsyncMock(return_value=websocket)
+    connection.__aexit__ = AsyncMock(return_value=None)
+    mocker.patch("srebot.llm.ws_client.connect", return_value=connection)
+    progress = AsyncMock()
+
+    await SaaSWSClient("wss://example.test", "token").analyze_alert(
+        alert_data={"alerts": []},
+        tools_schema=[],
+        tool_executor=AsyncMock(side_effect=RuntimeError("unavailable")),
+        response_language="Russian",
+        on_progress=progress,
+    )
+
+    assert progress.await_args_list[-1] == mocker.call(
+        ProgressEvent(ProgressPhase.UNAVAILABLE_RESULTS)
+    )

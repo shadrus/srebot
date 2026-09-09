@@ -6,6 +6,7 @@ import pytest
 
 from srebot.bot.telegram.handlers import _handle_alert_group, channel_post_handler
 from srebot.parser.alert_parser import Alert, AlertStatus
+from srebot.progress import ProgressEvent, ProgressPhase
 
 # ---------------------------------------------------------------------------
 # Helpers / shared fixtures
@@ -220,8 +221,8 @@ class TestHandleAlertGroupFiring:
     ):
         alert = _firing_alert()
 
-        async def analyze_with_tool_failure(_alerts, *, on_tool_failure, on_progress):
-            await on_tool_failure(["unavailable-tool"])
+        async def analyze_with_tool_failure(_alerts, *, on_progress):
+            await on_progress(ProgressEvent(ProgressPhase.PARTIAL_RESULTS))
             return "Partial analysis", None
 
         mock_agent.analyze = AsyncMock(side_effect=analyze_with_tool_failure)

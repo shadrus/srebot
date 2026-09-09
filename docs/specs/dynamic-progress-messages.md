@@ -26,18 +26,18 @@ A public status must be one plain-text line of at most 100 characters. It may de
 accepted action and its immediate purpose. It must not contain Markdown, URLs, code, tool names,
 tool arguments, secrets, hypotheses, or reasoning. It may name an entity only when that entity was
 already visible in the originating user message or alert. Invalid or missing text falls back to
-`Retrieving additional data`.
+`Retrieving additional data`. To reject a name placed at the beginning, accepted model text must
+start with a supported action verb; other openings also use the generic fallback.
 
 The agent publishes the status only when it begins the accepted batch. Localized, deterministic
-messages cover the initial phase, post-tool analysis, partial failure, and fallback. A fixed hourglass
-prefix is added by the agent.
+messages cover the initial phase, post-tool analysis, partial failure, complete data-source failure,
+and fallback. A fixed hourglass prefix is added by the agent.
 
 ## Test seams
 
 - Backend orchestration: an accepted tool-call response exposes a validated optional
   `progress_text` on `execute_tools`, while invalid text is omitted.
 - Agent WebSocket client: execution emits the public status at batch start and deterministic
-  phases after success or partial failure without changing the analysis result.
+  phases after success, partial failure, or complete failure without changing the analysis result.
 - Chat adapter delivery: all request types edit the existing placeholder, throttle and deduplicate
   progress, ignore progress-delivery failures, and preserve final replacement semantics.
-

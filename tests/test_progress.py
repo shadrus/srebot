@@ -25,10 +25,21 @@ def test_render_progress_uses_public_status_and_safe_fallback():
     )
     assert (
         render_progress(
+            ProgressEvent(ProgressPhase.TOOL_EXECUTION, "# Проверяю данные"),
+            "Russian",
+        )
+        == "⏳ *Получаю дополнительные данные…*"
+    )
+    assert (
+        render_progress(
             ProgressEvent(ProgressPhase.ANALYZING_RESULTS),
             "English",
         )
         == "⏳ *Analyzing results…*"
+    )
+    assert render_progress(ProgressEvent(ProgressPhase.PARTIAL_RESULTS), "English").startswith("⏳")
+    assert render_progress(ProgressEvent(ProgressPhase.UNAVAILABLE_RESULTS), "English").startswith(
+        "⏳"
     )
 
 
