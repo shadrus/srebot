@@ -102,16 +102,20 @@ The Agent is configured via `config.yml`. It defines which **MCP Servers** the A
 ```yaml
 mcp_servers:
   prometheus:
-    command: "uvx"
-    args: ["prometheus-mcp-server"]
-    env:
-      PROMETHEUS_URL: "http://prometheus:9090"
+    url: "http://localhost:18000/sse"
+    transport: "sse"
+    pool_size: 4
+    read_only: true
 ```
 
 The Agent will automatically:
-1. Connect to the Prometheus MCP server.
+1. Open the configured number of independent connections to the Prometheus MCP server.
 2. Register its tools (querying, metrics, etc.).
 3. Securely provide these tools to the SREBot AI when an incident occurs.
+
+`pool_size` defaults to `1` and accepts values from `1` to `32`. Startup fails unless every
+configured connection is ready. After startup, temporary MCP outages fail individual tool calls;
+later calls reconnect lazily without restarting the bot.
 
 ---
 

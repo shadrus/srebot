@@ -4,6 +4,8 @@ import asyncio
 import json
 import logging
 import re
+from collections import deque
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import Any
@@ -202,6 +204,15 @@ class ExternalMCPClient:
                     await self._reset_session()
                 return self._tool_error_response(name, retry_exc)
 
+    async def _call_tool_with_deadline(self, name: str, arguments: dict) -> str:
+        """Run the complete managed tool operation within one deadline."""
+        try:
+            async with asyncio.timeout(_TOOL_CALL_TIMEOUT):
+                return await self._call_tool_managed(name, arguments)
+        except TimeoutError as exc:
+            await self._reset_session()
+            return self._tool_error_response(name, exc)
+
     async def _call_tool_once(self, name: str, arguments: dict) -> str:
         """
         Call a tool once on the current session.
@@ -216,8 +227,7 @@ class ExternalMCPClient:
         if not self._session:
             raise RuntimeError("MCP session is not connected")
 
-        async with asyncio.timeout(_TOOL_CALL_TIMEOUT):
-            result = await self._session.call_tool(name, arguments)
+        result = await self._session.call_tool(name, arguments)
         # MCP results can have multiple components (text, image, resource)
         texts = [c.text for c in result.content if hasattr(c, "text")]
         content = "\n".join(texts)
@@ -300,7 +310,7 @@ class ExternalMCPClient:
                     elif request.operation == "list_tools":
                         result = await self._get_tools_as_openai_schema()
                     elif request.operation == "call_tool":
-                        result = await self._call_tool_managed(
+                        result = await self._call_tool_with_deadline(
                             request.name,
                             request.arguments or {},
                         )
@@ -344,3 +354,132 @@ class ExternalMCPClient:
                 pass
             self._worker_task = None
             self._request_queue = None
+
+
+class ExternalMCPClientPool:
+    """Fixed-size pool of independent external MCP connections."""
+
+    def __init__(self, url: str, transport: str = "sse", size: int = 1) -> None:
+        if not 1 <= size <= 32:
+            raise ValueError("MCP client pool size must be between 1 and 32")
+
+        self.url = url
+        self.size = size
+        self._clients = tuple(ExternalMCPClient(url, transport) for _ in range(size))
+        self._available: deque[ExternalMCPClient] = deque()
+        self._condition = asyncio.Condition()
+        self._lifecycle_lock = asyncio.Lock()
+        self._connected = False
+        self._closed = False
+
+    async def connect(self) -> None:
+        """Connect every pool member before making the pool available."""
+        async with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("MCP client pool is closed")
+            if self._connected:
+                return
+
+            results = await asyncio.gather(
+                *(client.connect() for client in self._clients),
+                return_exceptions=True,
+            )
+            failures = [result for result in results if isinstance(result, BaseException)]
+            if failures:
+                await asyncio.gather(
+                    *(client.close() for client in self._clients),
+                    return_exceptions=True,
+                )
+                self._closed = True
+                raise failures[0]
+
+            async with self._condition:
+                self._available.extend(self._clients)
+                self._connected = True
+                self._condition.notify_all()
+
+            logger.info("Initialized MCP connection pool with %d members: %s", self.size, self.url)
+
+    async def get_tools_as_openai_schema(self) -> list[dict]:
+        """Fetch tool schemas through one pool member."""
+        return await self._run_with_client(lambda client: client.get_tools_as_openai_schema())
+
+    async def call_tool(self, name: str, arguments: dict) -> str:
+        """Execute one tool call on the next available pool member."""
+        return await self._run_with_client(lambda client: client.call_tool(name, arguments))
+
+    async def _run_with_client[T](
+        self,
+        operation: Callable[[ExternalMCPClient], Awaitable[T]],
+    ) -> T:
+        client = await self._borrow()
+        task = asyncio.create_task(self._execute_and_return(client, operation))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            task.add_done_callback(self._consume_background_result)
+            raise
+
+    async def _borrow(self) -> ExternalMCPClient:
+        async with self._condition:
+            if not self._connected:
+                if self._closed:
+                    raise RuntimeError("MCP client pool is closed")
+                raise RuntimeError("MCP client pool is not connected")
+
+            while not self._available:
+                logger.debug("Waiting for an available MCP connection: %s", self.url)
+                await self._condition.wait()
+                if self._closed:
+                    raise RuntimeError("MCP client pool is closed")
+
+            client = self._available.popleft()
+            logger.debug(
+                "Borrowed MCP connection (%d/%d available): %s",
+                len(self._available),
+                self.size,
+                self.url,
+            )
+            return client
+
+    async def _execute_and_return[T](
+        self,
+        client: ExternalMCPClient,
+        operation: Callable[[ExternalMCPClient], Awaitable[T]],
+    ) -> T:
+        try:
+            return await operation(client)
+        finally:
+            async with self._condition:
+                if not self._closed:
+                    self._available.append(client)
+                    logger.debug(
+                        "Returned MCP connection (%d/%d available): %s",
+                        len(self._available),
+                        self.size,
+                        self.url,
+                    )
+                    self._condition.notify(1)
+
+    @staticmethod
+    def _consume_background_result(task: asyncio.Task[Any]) -> None:
+        try:
+            task.exception()
+        except asyncio.CancelledError:
+            pass
+
+    async def close(self) -> None:
+        """Reject new borrowing and close all pool members concurrently."""
+        async with self._lifecycle_lock:
+            async with self._condition:
+                if self._closed:
+                    return
+                self._closed = True
+                self._available.clear()
+                self._condition.notify_all()
+
+            await asyncio.gather(
+                *(client.close() for client in self._clients),
+                return_exceptions=True,
+            )
+            logger.info("Closed MCP connection pool with %d members: %s", self.size, self.url)

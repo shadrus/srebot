@@ -110,6 +110,7 @@ async def register_external_mcp(
     url: str,
     transport: str = "sse",
     read_only: bool = False,
+    pool_size: int = 1,
     connect_retries: int = 5,
     connect_retry_delay: float = 3.0,
 ):
@@ -126,10 +127,11 @@ async def register_external_mcp(
         url: MCP server endpoint URL.
         transport: "sse" or "http" (Streamable HTTP).
         read_only: If True, write-like tools are hidden from the LLM.
+        pool_size: Number of independent MCP connections for this server.
         connect_retries: Max TCP readiness attempts before giving up.
         connect_retry_delay: Base delay in seconds (doubles each retry).
     """
-    from srebot.mcp.mcp_client import ExternalMCPClient
+    from srebot.mcp.mcp_client import ExternalMCPClientPool
 
     parsed = urlparse(url)
     host = parsed.hostname or "localhost"
@@ -139,7 +141,7 @@ async def register_external_mcp(
     await _wait_for_tcp(host, port, retries=connect_retries, base_delay=connect_retry_delay)
     logger.info("TCP port %s:%d is open — connecting MCP session", host, port)
 
-    client = ExternalMCPClient(url, transport)
+    client = ExternalMCPClientPool(url, transport, size=pool_size)
     try:
         await client.connect()
     except BaseException as e:

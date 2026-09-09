@@ -4,6 +4,10 @@ An observability assistant that investigates chat requests and reports operation
 
 ## Language
 
+**External MCP server**:
+A configured integration endpoint that exposes private observability tools to the bot through MCP under one server identity.
+_Avoid_: MCP client, data source
+
 **Progress message**:
 A temporary chat message that communicates the bot's current user-visible phase or accepted action while a request is being processed.
 _Avoid_: Thinking message, reasoning message, activity log

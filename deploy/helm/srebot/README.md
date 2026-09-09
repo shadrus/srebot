@@ -109,11 +109,13 @@ config:
     prometheus:
       url: "http://localhost:18000/sse"
       transport: "sse"
+      pool_size: 4
       read_only: true
 
     elasticsearch:
       url: "http://localhost:18001/mcp"
       transport: "http"
+      pool_size: 4
       read_only: true
 ```
 

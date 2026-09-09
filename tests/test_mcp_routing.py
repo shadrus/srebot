@@ -1,6 +1,7 @@
 from unittest.mock import AsyncMock
 
 import pytest
+from pydantic import ValidationError
 
 from srebot.config import MCPServerConfig, MCPServerRegistry
 from srebot.llm.agent import AlertAnalysisAgent
@@ -42,3 +43,11 @@ async def test_agent_server_routing(mocker):
 
     kwargs = mock_ws.return_value.analyze_alert.call_args.kwargs
     assert kwargs["tools_schema"] == ["mocked_schema"]
+
+
+def test_mcp_server_pool_size_defaults_to_one_and_is_bounded():
+    assert MCPServerConfig(url="http://mcp.example/sse").pool_size == 1
+
+    for invalid_size in (0, 33):
+        with pytest.raises(ValidationError):
+            MCPServerConfig(url="http://mcp.example/sse", pool_size=invalid_size)

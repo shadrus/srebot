@@ -20,6 +20,7 @@ class MCPServerConfig(BaseModel):
     url: str
     transport: str = "sse"  # "sse" or "http" (Streamable HTTP)
     read_only: bool = False  # if True, only allow read-like tools
+    pool_size: int = Field(default=1, ge=1, le=32)
     condition: FilterCondition | None = None  # Optional rule to restrict server usage
 
 
