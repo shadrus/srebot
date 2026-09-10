@@ -5,9 +5,11 @@ import logging
 
 import discord
 from discord.ext import commands
+from discord.http import Route
 
 from srebot.bot.base import BotIntegration
 from srebot.bot.discord.handlers import register_handlers
+from srebot.bot.proxy import environment_proxy
 from srebot.config import Settings
 from srebot.llm.agent import get_agent
 
@@ -66,6 +68,7 @@ class DiscordBotIntegration(BotIntegration):
             command_prefix="!",
             intents=intents,
             help_command=None,
+            proxy=environment_proxy(Route.BASE),
         )
 
         @self._bot.event

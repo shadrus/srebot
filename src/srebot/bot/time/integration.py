@@ -4,9 +4,11 @@ import asyncio
 import logging
 from collections.abc import Mapping
 
+import httpx
 from aiotimebot import Application, Router, TimeClient
 
 from srebot.bot.base import BotIntegration
+from srebot.bot.proxy import environment_proxy
 from srebot.bot.time.handlers import TimeBotIdentity, register_handlers
 from srebot.bot.time.supervisor import TaskSupervisor
 from srebot.config import Settings
@@ -70,7 +72,15 @@ class TimeBotIntegration(BotIntegration):
             await get_agent().refresh_strategies()
             await self._register_mcp_servers()
 
-            client = TimeClient(self._settings.time_base_url, self._settings.time_token)
+            # aiotimebot's retry transport disables HTTPX's automatic env proxy lookup.
+            # Inject the underlying transport, keeping the SDK's retries and cleanup.
+            client = TimeClient(
+                self._settings.time_base_url,
+                self._settings.time_token,
+                transport=httpx.AsyncHTTPTransport(
+                    proxy=environment_proxy(self._settings.time_base_url),
+                ),
+            )
             router = Router()
             application = Application(client, router=router)
             async with application:

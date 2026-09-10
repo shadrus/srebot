@@ -49,6 +49,29 @@ Alertmanager ──chat notification──► Channel
 
 Only one chat integration may be configured in a bot process.
 
+### HTTP proxy
+
+All four chat integrations support the process environment variable `HTTPS_PROXY`
+for API requests and receiving events (Telegram polling or Slack/Discord/Time WebSocket).
+For example, add this to `.env` when using Docker Compose:
+
+```dotenv
+HTTPS_PROXY=http://proxy.example.com:3128
+```
+
+For an authenticated proxy, use `http://user:password@proxy.example.com:3128`.
+Use URL-safe credentials: the current Time WebSocket SDK does not decode
+percent-encoded proxy usernames/passwords. The proxy must support HTTP CONNECT
+to the chat service's HTTPS/WSS endpoints. For local runs, export `HTTPS_PROXY` in
+the shell before starting the bot; reading `.env` into application settings alone
+does not export variables to the SDKs. Unset the variable for direct connections.
+
+These are process-wide proxy variables: other HTTP/WebSocket clients may also use
+them. Discord selects one proxy using its API host (`discord.com`) and reuses it for
+the gateway and attachments. Time REST selects by `TIME_BASE_URL`, including
+`HTTP_PROXY` for an HTTP URL. Both selections respect `NO_PROXY`; Telegram and Time
+WebSocket use their SDK's environment rules. Slack's SDK does not apply `NO_PROXY`.
+
 ### Time Messenger
 
 Time support uses the [`aiotimebot`](https://pypi.org/project/aiotimebot/) asyncio SDK and Time API v4. Create or obtain a bearer token for an account that belongs to the alert channel, then configure:
