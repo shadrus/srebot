@@ -56,6 +56,7 @@ config:
   mcp_servers: {}
     # prometheus:
     #   url: "http://localhost:18080/sse"
+    #   pool_size: 4  # independent connections; defaults to 1, maximum 32
     #   # Limit this MCP server so it is ONLY used for alerts from a specific cluster
     #   condition:
     #     labels:

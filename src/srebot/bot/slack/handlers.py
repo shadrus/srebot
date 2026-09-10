@@ -487,11 +487,9 @@ def register_handlers(app: AsyncApp, settings: Settings) -> None:
                     logger.info("[DRY-RUN] Slack follow-up answer:\n%s", answer)
                 return
             elif rejection != RejectionReason.NO_CONTEXT:
-                if rejection == RejectionReason.COOLDOWN:
-                    user_msg = get_msg("cooldown")
-                else:
-                    max_turns = rejection_turn_limit(settings, rejection)
-                    user_msg = get_msg("limit_reached").format(current=max_turns, max=max_turns)
+                # Turn quota exhausted — send user-facing message
+                max_turns = rejection_turn_limit(settings, rejection)
+                user_msg = get_msg("limit_reached").format(current=max_turns, max=max_turns)
 
                 if not settings.dry_run:
                     try:

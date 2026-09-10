@@ -20,6 +20,7 @@ class MCPServerConfig(BaseModel):
     url: str
     transport: str = "sse"  # "sse" or "http" (Streamable HTTP)
     read_only: bool = False  # if True, only allow read-like tools
+    pool_size: int = Field(default=2, ge=1, le=32)  # parallel MCP connections per server
     condition: FilterCondition | None = None  # Optional rule to restrict server usage
 
 
@@ -66,9 +67,12 @@ class Settings(BaseSettings):
     followup_user_max_turns: int | None = None  # Max turns per user and incident
     followup_incident_max_turns: int = 20  # Max turns across all users for one incident
     followup_ttl: int = 43200  # Seconds follow-up context window stays open (12 h)
-    followup_user_cooldown_sec: int = 10  # Min seconds between follow-ups per user
     alert_analysis_timeout: int = 600  # seconds
     followup_analysis_timeout: int = 300  # seconds
+
+    # Analysis concurrency (process-wide admission limits)
+    analysis_max_concurrency: int = Field(default=20, ge=1)  # Max simultaneous analyses
+    analysis_max_concurrency_per_user: int = Field(default=3, ge=1)  # Per platform/chat/user
 
     # MCP connection retry settings (for sidecar startup races)
     mcp_connect_retries: int = 5  # Max connection attempts per MCP server
@@ -121,7 +125,6 @@ class Settings(BaseSettings):
         "followup_user_max_turns",
         "followup_incident_max_turns",
         "followup_ttl",
-        "followup_user_cooldown_sec",
     )
     @classmethod
     def validate_positive_followup_setting(cls, v: int | None) -> int | None:

@@ -373,9 +373,8 @@ async def followup_reply_handler(update: Update, context: ContextTypes.DEFAULT_T
                 except Exception as exc:
                     logger.warning("Could not delete follow-up indicator: %s", exc)
             return
-        if rejection == RejectionReason.COOLDOWN:
-            user_msg = get_msg("cooldown")
-        else:  # LIMIT_REACHED
+        if rejection is not None:
+            # Turn quota exhausted — send user-facing message
             max_turns = rejection_turn_limit(config.get_settings(), rejection)
             user_msg = get_msg("limit_reached").format(current=max_turns, max=max_turns)
 

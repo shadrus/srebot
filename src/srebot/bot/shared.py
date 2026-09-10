@@ -16,8 +16,10 @@ from collections.abc import Awaitable, Callable
 import srebot.config as config
 import srebot.llm.agent as llm_agent
 import srebot.state.store as state_store
+from srebot.bot.concurrency import get_concurrency_manager
 from srebot.bot.delivery import DeliveryReceipt
 from srebot.bot.progress import ProgressPublisher
+from srebot.messages import get_chat_message
 from srebot.parser.alert_parser import Alert, AlertStatus, parse_alert_message
 from srebot.parser.filtering import get_ignore_registry
 from srebot.progress import ProgressEvent
@@ -29,12 +31,42 @@ from srebot.state.store import (
 
 logger = logging.getLogger(__name__)
 
+_PLACEHOLDER_CLEANUP_TIMEOUT = 3.0
+
+
+async def _publish_queued_status(
+    adapter: ChatAdapter, placeholder_id: str | int | None, language: str
+) -> None:
+    """Best-effort placeholder update telling the user the analysis is queued."""
+    try:
+        await adapter.update_progress(
+            placeholder_id, get_chat_message("queued", language, "markdown")
+        )
+    except Exception:
+        logger.debug("Could not publish queued status", exc_info=True)
+
+
+async def _cancel_placeholder(
+    adapter: ChatAdapter, placeholder_id: str | int | None, language: str
+) -> None:
+    """Best-effort bounded placeholder update when an analysis is cancelled."""
+    if placeholder_id is None:
+        return
+    try:
+        async with asyncio.timeout(_PLACEHOLDER_CLEANUP_TIMEOUT):
+            await asyncio.shield(
+                adapter.update_progress(
+                    placeholder_id, get_chat_message("analysis_cancelled", language, "markdown")
+                )
+            )
+    except BaseException:
+        logger.debug("Could not update placeholder after cancellation", exc_info=True)
+
 
 class RejectionReason(enum.Enum):
     """Reason why a follow-up request was rejected."""
 
     NO_CONTEXT = "no_context"  # No RCA context found — not a bot reply
-    COOLDOWN = "cooldown"  # User is sending too fast
     LIMIT_REACHED = "limit_reached"  # Max turns exhausted for this incident
     USER_LIMIT_REACHED = "user_limit_reached"
     INCIDENT_LIMIT_REACHED = "incident_limit_reached"
@@ -130,11 +162,16 @@ async def run_followup_with_progress(
     Returns:
         Follow-up workflow result.
     """
+
+    async def on_queued() -> None:
+        await _publish_queued_status(adapter, placeholder_id, language)
+
     publisher = create_progress_publisher(adapter, placeholder_id, language)
     try:
         return await handler(
             **followup_kwargs,
             on_progress=publisher.publish,
+            on_queued=on_queued,
         )
     finally:
         await publisher.close()
@@ -153,7 +190,8 @@ async def register_followup_receipt(
     Args:
         receipt: Delivery result containing all successfully delivered message IDs.
         fingerprint: Follow-up fingerprint returned by the shared workflow.
-        incident_id: Newly created incident ID, if the analysis produced one.
+        incident_id: Incident ID registered for this branch — the newly created
+            one, or the parent captured before the analysis when none was created.
         chat_id: Namespaced platform chat identifier.
         additional_message_ids: Existing thread roots that should resolve to the same context.
     """
@@ -161,14 +199,6 @@ async def register_followup_receipt(
         return
 
     store = await state_store.get_store()
-    resolved_incident_id = incident_id
-    if resolved_incident_id is None and fingerprint != "general_query":
-        context = await store.get_followup_context(fingerprint)
-        if isinstance(context, dict):
-            parent_incident_id = context.get("incident_id")
-            if isinstance(parent_incident_id, str) and parent_incident_id:
-                resolved_incident_id = parent_incident_id
-
     message_ids = dict.fromkeys(
         (*receipt.message_ids, *(str(message_id) for message_id in additional_message_ids))
     )
@@ -176,7 +206,7 @@ async def register_followup_receipt(
         await store.register_bot_message(
             message_id,
             fingerprint,
-            incident_id=resolved_incident_id,
+            incident_id=incident_id,
         )
     await store.set_last_active_incident(chat_id, fingerprint)
 
@@ -280,13 +310,22 @@ async def execute_alert_group_workflow(
         placeholder_id,
         config.get_settings().llm_response_language,
     )
+    language = config.get_settings().llm_response_language
 
-    # Run LLM analysis
+    async def on_queued() -> None:
+        await _publish_queued_status(adapter, placeholder_id, language)
+
+    # Run LLM analysis under a process-wide concurrency slot; queue waits do
+    # not consume the LLM timeout because slots are acquired before it starts.
     try:
-        analysis, incident_id = await agent.analyze(
-            alerts,
-            on_progress=progress_publisher.publish,
-        )
+        async with get_concurrency_manager().analysis_slot(on_queued=on_queued):
+            analysis, incident_id = await agent.analyze(
+                alerts,
+                on_progress=progress_publisher.publish,
+            )
+    except asyncio.CancelledError:
+        await _cancel_placeholder(adapter, placeholder_id, language)
+        raise
     except Exception as exc:
         logger.exception("LLM analysis failed for group %s", group_fp)
         analysis = f"⚠️ Analysis failed: {exc}\nPlease investigate manually."
@@ -417,27 +456,31 @@ async def handle_followup_question(
     user_display_name: str | None = None,
     on_tool_failure: Callable[[list[str]], Awaitable[None]] | None = None,
     on_progress: Callable[[ProgressEvent], Awaitable[None]] | None = None,
+    on_queued: Callable[[], Awaitable[None]] | None = None,
 ) -> tuple[str, str | None, str | None, RejectionReason | None]:
     """
     Common follow-up processing pipeline shared by all platform integrations.
 
-    Validates the reply or mention, enforces rate limits and turn caps, then calls the LLM
+    Validates the reply or mention, enforces turn caps, then calls the LLM
     with the previous RCA context or initiates a general query.
 
     Args:
         reply_to_id: ID of the message being replied to, or None if direct mention.
         question: The engineer's follow-up question text.
-        user_id: Platform user identifier (for rate limiting).
+        user_id: Platform user identifier (for per-user concurrency limits).
         chat_id: The chat identifier (to resolve active incident context for mentions).
         allowed_servers: MCP server names allowed for this cluster (passed to agent).
         on_tool_failure: Optional callback invoked when MCP data sources fail.
         on_progress: Optional callback invoked for confirmed analysis progress.
+        on_queued: Optional callback invoked when all analysis slots are busy.
 
     Returns:
-        Tuple of (answer, new_incident_id, fingerprint_used, rejection_reason).
-        If rejection_reason is not None, answer is an empty string and the caller
-        should surface a platform-specific user-facing message based on the
-        rejection reason.
+        Tuple of (answer, incident_id, fingerprint_used, rejection_reason).
+        The incident ID is the one created by this analysis, or the parent
+        captured before it when none was created, so every parallel branch
+        registers its own lineage. If rejection_reason is not None, answer is
+        an empty string and the caller should surface a platform-specific
+        user-facing message based on the rejection reason.
     """
 
     store = await state_store.get_store()
@@ -461,11 +504,10 @@ async def handle_followup_question(
         ctx = await store.get_followup_context(fp)
         if not is_usable_followup_context(ctx):
             logger.debug("Follow-up: context missing or invalid for group %s", fp)
-            return "", None, fp, RejectionReason.NO_CONTEXT
+            return "", parent_incident_id, fp, RejectionReason.NO_CONTEXT
         identity = conversation_identity(chat_id, user_id)
         admission = await store.admit_followup(fp, identity)
         admission_rejections = {
-            FollowupAdmission.COOLDOWN: RejectionReason.COOLDOWN,
             FollowupAdmission.USER_LIMIT: RejectionReason.USER_LIMIT_REACHED,
             FollowupAdmission.INCIDENT_LIMIT: RejectionReason.INCIDENT_LIMIT_REACHED,
             FollowupAdmission.NO_CONTEXT: RejectionReason.NO_CONTEXT,
@@ -478,15 +520,12 @@ async def handle_followup_question(
                 identity.key,
                 fp,
             )
-            return "", None, fp, rejection
+            return "", parent_incident_id, fp, rejection
         rca_text = ctx["rca_text"]
         alert_data = ctx["alert_data"]
     else:
         # General query session: no active incident context
         identity = conversation_identity(chat_id, user_id)
-        if await store.check_and_set_scoped_cooldown(identity):
-            logger.info("General query rejected reason=cooldown user=%s", identity.key)
-            return "", None, None, RejectionReason.COOLDOWN
         fp = "general_query"
         rca_text = ""
         alert_data = []
@@ -506,7 +545,10 @@ async def handle_followup_question(
             followup_kwargs["on_tool_failure"] = on_tool_failure
         if on_progress:
             followup_kwargs["on_progress"] = on_progress
-        answer, new_incident_id = await agent.followup(**followup_kwargs)
+        async with get_concurrency_manager().analysis_slot(
+            user_key=identity.key, on_queued=on_queued
+        ):
+            answer, new_incident_id = await agent.followup(**followup_kwargs)
     except Exception:
         logger.exception("Unhandled failure during follow-up analysis")
         if settings.llm_response_language == "Russian":
@@ -522,9 +564,8 @@ async def handle_followup_question(
         new_incident_id = None
 
     if fp != "general_query":
-        if new_incident_id:
-            await store.update_followup_context_incident_id(fp, new_incident_id)
         if not rca_text:
             await store.update_followup_context_rca_text(fp, answer)
 
-    return answer, new_incident_id, fp, None
+    incident_to_register = new_incident_id or parent_incident_id
+    return answer, incident_to_register, fp, None

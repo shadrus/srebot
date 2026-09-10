@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from anyio import ClosedResourceError
 
-from srebot.mcp.mcp_client import ExternalMCPClient
+from srebot.mcp.mcp_client import ExternalMCPClient, ExternalMCPClientPool
 
 
 def _mock_tool_result(text: str, is_error: bool = False) -> MagicMock:
@@ -138,6 +138,25 @@ async def test_call_tool_returns_error_when_reconnect_retry_fails():
 
 
 @pytest.mark.asyncio
+async def test_call_tool_timeout_ends_the_complete_operation_without_retry(monkeypatch):
+    monkeypatch.setattr("srebot.mcp.mcp_client._TOOL_CALL_TIMEOUT", 0.01)
+    client = ExternalMCPClient("dummy_cmd")
+    client._session = AsyncMock()
+
+    async def slow_call(*_args):
+        await asyncio.sleep(1)
+
+    client._session.call_tool.side_effect = slow_call
+    client._connect_session = AsyncMock()
+
+    result = await client.call_tool("slow_tool", {})
+
+    assert json.loads(result) == {"error": "TimeoutError"}
+    client._connect_session.assert_not_awaited()
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_call_tool_serializes_parallel_calls_on_single_client():
     client = ExternalMCPClient("dummy_cmd")
 
@@ -164,6 +183,228 @@ async def test_call_tool_serializes_parallel_calls_on_single_client():
     assert sorted(results) == ["some_tool:1", "some_tool:2"]
     assert session.max_active_calls == 1
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_pool_runs_calls_in_parallel_without_sharing_sessions(monkeypatch):
+    release_calls = asyncio.Event()
+    all_calls_started = asyncio.Event()
+    sessions = []
+    active_calls = 0
+    max_active_calls = 0
+
+    @asynccontextmanager
+    async def fake_sse_client(_url: str, **_kwargs):
+        yield object(), object()
+
+    class FakeSession:
+        def __init__(self, _read, _write):
+            self.active_calls = 0
+            self.max_active_calls = 0
+            sessions.append(self)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            pass
+
+        async def initialize(self):
+            pass
+
+        async def call_tool(self, name: str, _arguments: dict):
+            nonlocal active_calls, max_active_calls
+            self.active_calls += 1
+            self.max_active_calls = max(self.max_active_calls, self.active_calls)
+            active_calls += 1
+            max_active_calls = max(max_active_calls, active_calls)
+            if active_calls == 2:
+                all_calls_started.set()
+            await release_calls.wait()
+            active_calls -= 1
+            self.active_calls -= 1
+            return _mock_tool_result(name)
+
+    monkeypatch.setattr("srebot.mcp.mcp_client.sse_client", fake_sse_client)
+    monkeypatch.setattr("srebot.mcp.mcp_client.ClientSession", FakeSession)
+    pool = ExternalMCPClientPool("http://mcp.example/sse", size=2)
+    await pool.connect()
+
+    first = asyncio.create_task(pool.call_tool("first", {}))
+    second = asyncio.create_task(pool.call_tool("second", {}))
+    await asyncio.wait_for(all_calls_started.wait(), timeout=0.1)
+    release_calls.set()
+
+    assert sorted(await asyncio.gather(first, second)) == ["first", "second"]
+    assert max_active_calls == 2
+    assert all(session.max_active_calls == 1 for session in sessions)
+    await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_pool_keeps_cancelled_call_borrowed_until_client_finishes(monkeypatch):
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    second_started = asyncio.Event()
+
+    @asynccontextmanager
+    async def fake_sse_client(_url: str, **_kwargs):
+        yield object(), object()
+
+    class FakeSession:
+        def __init__(self, _read, _write):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            pass
+
+        async def initialize(self):
+            pass
+
+        async def call_tool(self, name: str, _arguments: dict):
+            if name == "first":
+                first_started.set()
+                await release_first.wait()
+            else:
+                second_started.set()
+            return _mock_tool_result(name)
+
+    monkeypatch.setattr("srebot.mcp.mcp_client.sse_client", fake_sse_client)
+    monkeypatch.setattr("srebot.mcp.mcp_client.ClientSession", FakeSession)
+    pool = ExternalMCPClientPool("http://mcp.example/sse", size=1)
+    await pool.connect()
+
+    first = asyncio.create_task(pool.call_tool("first", {}))
+    await first_started.wait()
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    second = asyncio.create_task(pool.call_tool("second", {}))
+    await asyncio.sleep(0.01)
+    assert not second_started.is_set()
+
+    release_first.set()
+    assert await second == "second"
+    await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_pool_connect_is_atomic_when_one_member_fails(monkeypatch):
+    opened_transports = 0
+    closed_transports = 0
+    initialized_sessions = 0
+
+    @asynccontextmanager
+    async def fake_sse_client(_url: str, **_kwargs):
+        nonlocal opened_transports, closed_transports
+        opened_transports += 1
+        try:
+            yield object(), object()
+        finally:
+            closed_transports += 1
+
+    class FakeSession:
+        def __init__(self, _read, _write):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            pass
+
+        async def initialize(self):
+            nonlocal initialized_sessions
+            initialized_sessions += 1
+            if initialized_sessions == 2:
+                raise RuntimeError("connection rejected")
+
+    monkeypatch.setattr("srebot.mcp.mcp_client.sse_client", fake_sse_client)
+    monkeypatch.setattr("srebot.mcp.mcp_client.ClientSession", FakeSession)
+    pool = ExternalMCPClientPool("http://mcp.example/sse", size=2)
+
+    with pytest.raises(RuntimeError, match="connection rejected"):
+        await pool.connect()
+
+    assert opened_transports == 2
+    assert closed_transports == 2
+    with pytest.raises(RuntimeError, match="pool is closed"):
+        await pool.call_tool("query", {})
+
+
+@pytest.mark.asyncio
+async def test_pool_shutdown_cancels_active_calls_and_rejects_waiters(monkeypatch):
+    active_started = asyncio.Event()
+
+    @asynccontextmanager
+    async def fake_sse_client(_url: str, **_kwargs):
+        yield object(), object()
+
+    class FakeSession:
+        def __init__(self, _read, _write):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            pass
+
+        async def initialize(self):
+            pass
+
+        async def call_tool(self, _name: str, _arguments: dict):
+            active_started.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr("srebot.mcp.mcp_client.sse_client", fake_sse_client)
+    monkeypatch.setattr("srebot.mcp.mcp_client.ClientSession", FakeSession)
+    pool = ExternalMCPClientPool("http://mcp.example/sse", size=1)
+    await pool.connect()
+
+    active = asyncio.create_task(pool.call_tool("active", {}))
+    await active_started.wait()
+    waiting = asyncio.create_task(pool.call_tool("waiting", {}))
+    await asyncio.sleep(0)
+    await pool.close()
+    await pool.close()
+
+    results = await asyncio.gather(active, waiting, return_exceptions=True)
+    assert isinstance(results[0], asyncio.CancelledError)
+    assert isinstance(results[1], RuntimeError)
+
+
+@pytest.mark.asyncio
+async def test_pool_rejects_calls_started_after_shutdown(monkeypatch):
+    @asynccontextmanager
+    async def fake_sse_client(_url: str, **_kwargs):
+        yield object(), object()
+
+    class FakeSession:
+        def __init__(self, _read, _write):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            pass
+
+        async def initialize(self):
+            pass
+
+    monkeypatch.setattr("srebot.mcp.mcp_client.sse_client", fake_sse_client)
+    monkeypatch.setattr("srebot.mcp.mcp_client.ClientSession", FakeSession)
+    pool = ExternalMCPClientPool("http://mcp.example/sse")
+    await pool.connect()
+    await pool.close()
+
+    with pytest.raises(RuntimeError, match="pool is closed"):
+        await asyncio.wait_for(pool.call_tool("late", {}), timeout=0.1)
 
 
 @pytest.mark.asyncio

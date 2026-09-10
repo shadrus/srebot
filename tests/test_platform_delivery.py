@@ -1,3 +1,4 @@
+import asyncio
 from datetime import timedelta
 from itertools import count
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -460,9 +461,9 @@ def test_time_retry_contract_requires_idempotency_for_post():
     assert policy.allows_retry("GET", None)
 
 
-async def test_followup_receipt_uses_parent_context_when_new_incident_is_missing():
+async def test_followup_receipt_does_not_reread_shared_incident_context():
+    """Parallel branches must not adopt another branch's incident (ADR-0005)."""
     store = AsyncMock()
-    store.get_followup_context.return_value = {"incident_id": "incident-parent"}
     receipt = DeliveryReceipt.from_ids(("first", "second"), 3)
 
     with patch("srebot.state.store.get_store", return_value=store):
@@ -474,10 +475,11 @@ async def test_followup_receipt_uses_parent_context_when_new_incident_is_missing
             additional_message_ids=("thread-root", "first"),
         )
 
+    store.get_followup_context.assert_not_awaited()
     assert store.register_bot_message.await_args_list == [
-        (("first", "group-fp"), {"incident_id": "incident-parent"}),
-        (("second", "group-fp"), {"incident_id": "incident-parent"}),
-        (("thread-root", "group-fp"), {"incident_id": "incident-parent"}),
+        (("first", "group-fp"), {"incident_id": None}),
+        (("second", "group-fp"), {"incident_id": None}),
+        (("thread-root", "group-fp"), {"incident_id": None}),
     ]
     store.set_last_active_incident.assert_awaited_once_with("slack:C1", "group-fp")
 
@@ -643,3 +645,134 @@ async def test_shared_short_notification_registers_every_partial_receipt_id():
         (("short-extra", "fp1"), {"incident_id": None}),
     ]
     store.mark_firing.assert_awaited_once_with("fp1", "short")
+
+
+async def test_shared_alert_workflow_publishes_queued_status_when_slots_busy():
+    from srebot.bot.concurrency import ConcurrencyManager
+    from srebot.bot.shared import execute_alert_group_workflow
+    from srebot.messages import get_chat_message
+    from srebot.parser.alert_parser import Alert, AlertStatus
+
+    manager = ConcurrencyManager(max_total=1, max_per_user=3)
+    release = asyncio.Event()
+
+    store = AsyncMock()
+    store.is_new.return_value = True
+    store.get_status.return_value = "analyzing"
+
+    async def slow_analyze(_alerts, *, on_progress, on_tool_failure=None):
+        await release.wait()
+        return "analysis", "incident-1"
+
+    agent = MagicMock()
+    agent.analyze = AsyncMock(side_effect=slow_analyze)
+
+    def make_adapter() -> MagicMock:
+        adapter = MagicMock()
+        adapter.get_chat_id.return_value = "telegram:C1"
+        adapter.send_analyzing_placeholder = AsyncMock(
+            return_value=DeliveryReceipt.from_ids(("placeholder",), 1)
+        )
+        adapter.update_progress = AsyncMock()
+        adapter.update_with_analysis = AsyncMock(
+            return_value=DeliveryReceipt.from_ids(("placeholder",), 1)
+        )
+        return adapter
+
+    adapter_one = make_adapter()
+    adapter_two = make_adapter()
+    alert = Alert(
+        status=AlertStatus.FIRING,
+        alertname="CPUHigh",
+        cluster="prod",
+        labels={"job": "api"},
+        fingerprint="fp1",
+    )
+    settings = MagicMock(
+        auto_analyze_alerts=True,
+        llm_response_language="Russian",
+        followup_ttl=43_200,
+    )
+
+    with (
+        patch("srebot.state.store.get_store", return_value=store),
+        patch("srebot.llm.agent.get_agent", return_value=agent),
+        patch("srebot.config.get_settings", return_value=settings),
+        patch("srebot.bot.shared.get_concurrency_manager", return_value=manager),
+    ):
+        first = asyncio.create_task(
+            execute_alert_group_workflow("fp1", [alert], adapter_one, dry_run=False)
+        )
+        await asyncio.sleep(0.05)
+        second = asyncio.create_task(
+            execute_alert_group_workflow("fp2", [alert], adapter_two, dry_run=False)
+        )
+        await asyncio.sleep(0.05)
+        release.set()
+        await asyncio.wait_for(asyncio.gather(first, second), timeout=5)
+
+    queued_text = get_chat_message("queued", "Russian", "markdown")
+    assert any(
+        call.args == ("placeholder", queued_text)
+        for call in adapter_two.update_progress.await_args_list
+    )
+    assert not any(
+        call.args == ("placeholder", queued_text)
+        for call in adapter_one.update_progress.await_args_list
+    )
+
+
+async def test_shared_alert_workflow_publishes_cancelled_status_when_analysis_cancelled():
+    from srebot.bot.shared import execute_alert_group_workflow
+    from srebot.messages import get_chat_message
+    from srebot.parser.alert_parser import Alert, AlertStatus
+
+    release = asyncio.Event()
+
+    store = AsyncMock()
+    store.is_new.return_value = True
+    store.get_status.return_value = "analyzing"
+
+    async def hanging_analyze(_alerts, *, on_progress, on_tool_failure=None):
+        await release.wait()
+        return "analysis", "incident-1"
+
+    agent = MagicMock()
+    agent.analyze = AsyncMock(side_effect=hanging_analyze)
+    adapter = MagicMock()
+    adapter.get_chat_id.return_value = "telegram:C1"
+    adapter.send_analyzing_placeholder = AsyncMock(
+        return_value=DeliveryReceipt.from_ids(("placeholder",), 1)
+    )
+    adapter.update_progress = AsyncMock()
+    adapter.update_with_analysis = AsyncMock(
+        return_value=DeliveryReceipt.from_ids(("placeholder",), 1)
+    )
+    alert = Alert(
+        status=AlertStatus.FIRING,
+        alertname="CPUHigh",
+        cluster="prod",
+        labels={"job": "api"},
+        fingerprint="fp1",
+    )
+    settings = MagicMock(
+        auto_analyze_alerts=True,
+        llm_response_language="Russian",
+        followup_ttl=43_200,
+    )
+
+    with (
+        patch("srebot.state.store.get_store", return_value=store),
+        patch("srebot.llm.agent.get_agent", return_value=agent),
+        patch("srebot.config.get_settings", return_value=settings),
+    ):
+        task = asyncio.create_task(
+            execute_alert_group_workflow("fp1", [alert], adapter, dry_run=False)
+        )
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    cancelled_text = get_chat_message("analysis_cancelled", "Russian", "markdown")
+    adapter.update_progress.assert_awaited_with("placeholder", cancelled_text)

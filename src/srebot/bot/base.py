@@ -93,6 +93,7 @@ class BotIntegration(ABC):
                     url=cfg.url,
                     transport=cfg.transport,
                     read_only=cfg.read_only,
+                    pool_size=cfg.pool_size,
                     connect_retries=retries,
                     connect_retry_delay=retry_delay,
                 )

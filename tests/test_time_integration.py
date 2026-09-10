@@ -179,6 +179,7 @@ async def test_thread_followup_uses_root_incident_context():
         chat_id="time:channel-1",
         user_display_name="@engineer",
         on_progress=ANY,
+        on_queued=ANY,
     )
     assert store.register_bot_message.await_args_list == [
         (("indicator-1", "group-fp"), {"incident_id": "incident-2"}),
@@ -202,7 +203,8 @@ async def test_time_mcp_failure_updates_indicator():
 
     async def followup_with_failure(**kwargs):
         await kwargs["on_progress"](ProgressEvent(ProgressPhase.PARTIAL_RESULTS))
-        return "Partial answer", None, "group-fp", None
+        # Real handler returns ``new_incident_id or parent_incident_id``.
+        return "Partial answer", "incident-1", "group-fp", None
 
     with (
         patch("srebot.bot.time.handlers.state_store.get_store", return_value=store),
@@ -268,6 +270,7 @@ async def test_direct_mention_starts_general_followup():
         chat_id="time:channel-1",
         user_display_name=None,
         on_progress=ANY,
+        on_queued=ANY,
     )
     assert store.register_bot_message.await_args_list == [
         (("indicator-1", "general_query"), {"incident_id": "incident-general"}),

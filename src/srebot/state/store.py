@@ -63,11 +63,11 @@ end
 
 local context_raw = redis.call('GET', KEYS[1])
 if not context_raw then
-    return 4
+    return 3
 end
 local decoded, context = pcall(cjson.decode, context_raw)
 if not decoded or type(context) ~= 'table' then
-    return 4
+    return 3
 end
 if type(context['rca_text']) ~= 'string'
     or type(context['alert_data']) ~= 'table'
@@ -75,29 +75,25 @@ if type(context['rca_text']) ~= 'string'
     or type(context['turns']) ~= 'number'
     or context['turns'] < 0
     or context['turns'] ~= math.floor(context['turns']) then
-    return 4
+    return 3
 end
 local context_ttl_ms = redis.call('PTTL', KEYS[1])
 if context_ttl_ms == 0 or context_ttl_ms == -2 then
-    return 4
-end
-if redis.call('EXISTS', KEYS[2]) == 1 then
-    return 1
-end
-local user_turns = tonumber(redis.call('GET', KEYS[3]) or '0')
-local incident_turns = context['turns']
-if user_turns >= tonumber(ARGV[2]) then
-    return 2
-end
-if incident_turns >= tonumber(ARGV[3]) then
     return 3
 end
-if context_ttl_ms < 0 then
-    context_ttl_ms = tonumber(ARGV[4]) * 1000
+local user_turns = tonumber(redis.call('GET', KEYS[2]) or '0')
+local incident_turns = context['turns']
+if user_turns >= tonumber(ARGV[1]) then
+    return 1
 end
-redis.call('SET', KEYS[2], '1', 'EX', ARGV[1])
-redis.call('INCR', KEYS[3])
-redis.call('PEXPIRE', KEYS[3], context_ttl_ms)
+if incident_turns >= tonumber(ARGV[2]) then
+    return 2
+end
+if context_ttl_ms < 0 then
+    context_ttl_ms = tonumber(ARGV[3]) * 1000
+end
+redis.call('INCR', KEYS[2])
+redis.call('PEXPIRE', KEYS[2], context_ttl_ms)
 context['turns'] = incident_turns + 1
 redis.call('SET', KEYS[1], cjson.encode(context), 'PX', context_ttl_ms)
 return 0
@@ -163,7 +159,6 @@ class FollowupAdmission(StrEnum):
     """Result of an atomic follow-up quota admission."""
 
     ACCEPTED = "accepted"
-    COOLDOWN = "cooldown"
     USER_LIMIT = "user_limit"
     INCIDENT_LIMIT = "incident_limit"
     NO_CONTEXT = "no_context"
@@ -385,26 +380,6 @@ class AlertStore:
         val = await self._redis.get(f"last_incident:{chat_id}")
         return _decode_redis_value(val) if val is not None else None
 
-    async def update_followup_context_incident_id(self, fingerprint: str, incident_id: str) -> None:
-        """
-        Update the incident_id inside the followup context for a fingerprint.
-        """
-        key = f"alert:followup:{fingerprint}"
-        updated = await self._redis.eval(
-            _UPDATE_FOLLOWUP_CONTEXT_SCRIPT,
-            1,
-            key,
-            "incident_id",
-            incident_id,
-        )
-        if not updated:
-            return
-        logger.debug(
-            "Updated followup context for %s with incident_id %s",
-            fingerprint,
-            incident_id,
-        )
-
     async def update_followup_context_rca_text(self, fingerprint: str, rca_text: str) -> None:
         """
         Update the rca_text inside the followup context for a fingerprint.
@@ -422,18 +397,6 @@ class AlertStore:
             return
         logger.debug("Updated followup context for %s with new rca_text", fingerprint)
 
-    async def check_and_set_scoped_cooldown(self, identity: ConversationIdentity) -> bool:
-        """Atomically check and set cooldown for a platform/chat/user identity."""
-        settings = get_settings()
-        key = f"followup:cooldown:{identity.key}"
-        was_set = await self._redis.set(
-            key,
-            "1",
-            ex=settings.followup_user_cooldown_sec,
-            nx=True,
-        )
-        return not was_set
-
     async def admit_followup(
         self,
         fingerprint: str,
@@ -443,7 +406,7 @@ class AlertStore:
 
         Args:
             fingerprint: Alert group fingerprint with active follow-up context.
-            identity: Platform/chat/user scope for cooldown and per-user turns.
+            identity: Platform/chat/user scope for per-user turns.
 
         Returns:
             Structured admission result.
@@ -451,24 +414,21 @@ class AlertStore:
         settings = get_settings()
         keys = (
             f"alert:followup:{fingerprint}",
-            f"followup:cooldown:{identity.key}",
             f"followup:turns:user:{fingerprint}:{identity.key}",
         )
         result = await self._redis.eval(
             _ADMIT_FOLLOWUP_SCRIPT,
             len(keys),
             *keys,
-            settings.followup_user_cooldown_sec,
             settings.effective_followup_user_max_turns,
             settings.followup_incident_max_turns,
             settings.followup_ttl,
         )
         mapping = {
             0: FollowupAdmission.ACCEPTED,
-            1: FollowupAdmission.COOLDOWN,
-            2: FollowupAdmission.USER_LIMIT,
-            3: FollowupAdmission.INCIDENT_LIMIT,
-            4: FollowupAdmission.NO_CONTEXT,
+            1: FollowupAdmission.USER_LIMIT,
+            2: FollowupAdmission.INCIDENT_LIMIT,
+            3: FollowupAdmission.NO_CONTEXT,
         }
         admission = mapping.get(int(result))
         if admission is None:

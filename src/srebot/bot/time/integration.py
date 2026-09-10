@@ -4,10 +4,13 @@ import asyncio
 import logging
 from collections.abc import Mapping
 
+import httpx
 from aiotimebot import Application, Router, TimeClient
 
 from srebot.bot.base import BotIntegration
+from srebot.bot.proxy import environment_proxy
 from srebot.bot.time.handlers import TimeBotIdentity, register_handlers
+from srebot.bot.time.supervisor import TaskSupervisor
 from srebot.config import Settings
 from srebot.llm.agent import get_agent
 
@@ -64,11 +67,20 @@ class TimeBotIntegration(BotIntegration):
 
     async def _run(self) -> None:
         """Initialize shared services, authenticate the Time account, and consume events."""
+        supervisor = TaskSupervisor()
         try:
             await get_agent().refresh_strategies()
             await self._register_mcp_servers()
 
-            client = TimeClient(self._settings.time_base_url, self._settings.time_token)
+            # aiotimebot's retry transport disables HTTPX's automatic env proxy lookup.
+            # Inject the underlying transport, keeping the SDK's retries and cleanup.
+            client = TimeClient(
+                self._settings.time_base_url,
+                self._settings.time_token,
+                transport=httpx.AsyncHTTPTransport(
+                    proxy=environment_proxy(self._settings.time_base_url),
+                ),
+            )
             router = Router()
             application = Application(client, router=router)
             async with application:
@@ -81,7 +93,7 @@ class TimeBotIntegration(BotIntegration):
                 )
                 message_limit = await discover_time_message_limit(client)
                 client.message_limit = message_limit
-                register_handlers(router, self._settings, client, identity)
+                register_handlers(router, self._settings, client, identity, supervisor)
 
                 logger.info(
                     "Time bot WebSocket started. Listening for alerts in channel %s as @%s",
@@ -89,7 +101,12 @@ class TimeBotIntegration(BotIntegration):
                     identity.username or identity.user_id,
                 )
                 logger.info("Time message delivery limit set to %d characters", message_limit)
-                await application.run()
+                try:
+                    await application.run()
+                finally:
+                    # Drain background analyses before the Time client and shared
+                    # resources close so tasks cannot outlive their connections.
+                    await supervisor.aclose()
         finally:
             await self._shutdown_resources()
 

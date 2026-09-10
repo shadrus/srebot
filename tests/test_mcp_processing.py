@@ -1,5 +1,7 @@
+import asyncio
 import json
-from unittest.mock import AsyncMock
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, MagicMock
 
 from srebot.llm.ws_client import (
     _execute_tool_calls,
@@ -8,6 +10,7 @@ from srebot.llm.ws_client import (
     _tools_used_notice,
     _trim_tool_result,
 )
+from srebot.mcp.mcp_client import ExternalMCPClientPool
 from srebot.mcp.registry import _process_tool_result
 
 
@@ -165,6 +168,73 @@ async def test_execute_tool_calls_reports_failure_and_keeps_successful_results()
     ]
     assert failed_tools == {"unavailable-tool"}
     callback.assert_awaited_once_with(["unavailable-tool"])
+
+
+async def test_execute_tool_calls_uses_pool_capacity_for_parallel_batch(monkeypatch):
+    release_calls = asyncio.Event()
+    both_started = asyncio.Event()
+    active_calls = 0
+    max_active_calls = 0
+
+    @asynccontextmanager
+    async def fake_sse_client(_url: str, **_kwargs):
+        yield object(), object()
+
+    class FakeSession:
+        def __init__(self, _read, _write):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            pass
+
+        async def initialize(self):
+            pass
+
+        async def call_tool(self, name: str, _arguments: dict):
+            nonlocal active_calls, max_active_calls
+            active_calls += 1
+            max_active_calls = max(max_active_calls, active_calls)
+            if active_calls == 2:
+                both_started.set()
+            await release_calls.wait()
+            active_calls -= 1
+
+            content = MagicMock()
+            content.text = json.dumps({"marker": name})
+            result = MagicMock()
+            result.content = [content]
+            result.isError = False
+            return result
+
+    monkeypatch.setattr("srebot.mcp.mcp_client.sse_client", fake_sse_client)
+    monkeypatch.setattr("srebot.mcp.mcp_client.ClientSession", FakeSession)
+    pool = ExternalMCPClientPool("http://mcp.example/sse", size=2)
+    await pool.connect()
+
+    execution = asyncio.create_task(
+        _execute_tool_calls(
+            [
+                {"tool_call_id": "1", "tool_name": "pool-e2e-first", "args": {}},
+                {"tool_call_id": "2", "tool_name": "pool-e2e-second", "args": {}},
+            ],
+            pool.call_tool,
+            " (pool integration)",
+        )
+    )
+    await asyncio.wait_for(both_started.wait(), timeout=0.1)
+    release_calls.set()
+    results, failed_tools = await execution
+
+    assert max_active_calls == 2
+    assert results == [
+        {"tool_call_id": "1", "data": '{"marker": "pool-e2e-first"}'},
+        {"tool_call_id": "2", "data": '{"marker": "pool-e2e-second"}'},
+    ]
+    assert failed_tools == set()
+    await pool.close()
 
 
 def test_dynamic_tool_notices_use_markdown_instead_of_platform_html():

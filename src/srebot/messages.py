@@ -26,7 +26,10 @@ _MESSAGES = {
             "⚠️ [bold]Часть источников данных недоступна.[/bold] "
             "Не удалось выполнить: {tools}. Выводы анализа могут быть неполными."
         ),
-        "cooldown": "⏳ [italic]Подождите немного перед следующим вопросом.[/italic]",
+        "queued": ("⏳ [italic]Все слоты анализа заняты — запрос в очереди…[/italic]"),
+        "analysis_cancelled": (
+            "⚠️ [italic]Анализ прерван из-за остановки бота. Повторите запрос позже.[/italic]"
+        ),
         "limit_reached": (
             "🔒 [italic]Лимит уточняющих вопросов по этому инциденту исчерпан "
             "({current}/{max}).[/italic]"
@@ -63,7 +66,10 @@ _MESSAGES = {
             "⚠️ [bold]Some data sources were unavailable.[/bold] "
             "Failed tools: {tools}. The analysis may be incomplete."
         ),
-        "cooldown": "⏳ [italic]Please wait a bit before the next question.[/italic]",
+        "queued": ("⏳ [italic]All analysis slots are busy — request queued…[/italic]"),
+        "analysis_cancelled": (
+            "⚠️ [italic]Analysis interrupted by bot shutdown. Please retry later.[/italic]"
+        ),
         "limit_reached": (
             "🔒 [italic]Limit of follow-up questions for this incident reached "
             "({current}/{max}).[/italic]"
