@@ -74,6 +74,9 @@ spec:
                   key: SAAS_AGENT_TOKEN
             - name: SAAS_WS_URL
               value: {{ .Values.config.saas_ws_url | quote }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           ports:
             - name: health
               containerPort: 8080

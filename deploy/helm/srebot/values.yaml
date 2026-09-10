@@ -24,6 +24,12 @@ serviceAccount:
 
 podAnnotations: {}
 
+# Extra environment variables for the bot container (not sidecars).
+# Supports Kubernetes env entries, including valueFrom.secretKeyRef.
+extraEnv: []
+  # - name: HTTPS_PROXY
+  #   value: "http://proxy.example.com:3128"
+
 podSecurityContext: {}
   # fsGroup: 2000
 
