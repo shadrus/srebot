@@ -110,7 +110,7 @@ async def register_external_mcp(
     url: str,
     transport: str = "sse",
     read_only: bool = False,
-    pool_size: int = 1,
+    pool_size: int = 2,
     connect_retries: int = 5,
     connect_retry_delay: float = 3.0,
 ):
@@ -127,7 +127,7 @@ async def register_external_mcp(
         url: MCP server endpoint URL.
         transport: "sse" or "http" (Streamable HTTP).
         read_only: If True, write-like tools are hidden from the LLM.
-        pool_size: Number of independent MCP connections for this server.
+        pool_size: Number of independent MCP connections for this server (default 2).
         connect_retries: Max TCP readiness attempts before giving up.
         connect_retry_delay: Base delay in seconds (doubles each retry).
     """

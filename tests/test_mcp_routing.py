@@ -45,8 +45,8 @@ async def test_agent_server_routing(mocker):
     assert kwargs["tools_schema"] == ["mocked_schema"]
 
 
-def test_mcp_server_pool_size_defaults_to_one_and_is_bounded():
-    assert MCPServerConfig(url="http://mcp.example/sse").pool_size == 1
+def test_mcp_server_pool_size_defaults_to_two_and_is_bounded():
+    assert MCPServerConfig(url="http://mcp.example/sse").pool_size == 2
 
     for invalid_size in (0, 33):
         with pytest.raises(ValidationError):
